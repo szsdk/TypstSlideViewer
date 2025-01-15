@@ -317,7 +317,9 @@ async function loadSVG(index, animationType = 'no-animation') {
 
 
         const annotationLayer = document.getElementById("annotation-layer");
-        annotationLayer.style.display = "none";
+        if (animationType != "no-animation"){
+          annotationLayer.style.display = "none";
+        }
 
         // Remove the old slide after the animation completes
         setTimeout(() => {
@@ -614,7 +616,7 @@ document.addEventListener("DOMContentLoaded", () => {
     loadThumbnails();
 
     // Keyboard event listeners for navigating slides
-    document.addEventListener("keydown", viewerKeydown); 
+    document.getElementById("svg-container").addEventListener("keydown", viewerKeydown); 
 
     // Click to load next slide (for convenience)
     document.getElementById("svg-container").addEventListener("click", () => {
