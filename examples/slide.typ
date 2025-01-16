@@ -70,4 +70,11 @@
 == Add foreignObject 
 #xhtml(outer-width: 400pt, outer-height: 400pt, inner-height: 400pt, inner-width: 400pt, ```html
   <iframe src="https://typst.app" width="200%" height="160%" style="border: none; transform: scale(0.6); transform-origin: 0 0;"></iframe>
-```)
+  ```)
+
+== Add video
+#xhtml(outer-width: 400pt, outer-height: 400pt, inner-height: 400pt, inner-width: 400pt, ```html
+  <video xmlns="http://www.w3.org/1999/xhtml" width="400px" height="400px" controls="" >
+    <source src="./sample-5s.mp4" type="video/mp4" />
+  </video>
+  ```)

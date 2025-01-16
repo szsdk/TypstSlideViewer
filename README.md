@@ -8,6 +8,7 @@ pip install .
 
 ## Usage
 
+After the installation, the `gen-slide` command will be available in the terminal.
 ```
 SYNOPSIS
     gen-slide TYPST_SRC <flags>
@@ -34,3 +35,14 @@ FLAGS
         Default: ''
         Note position. If not specified, assumpe that the slides are not compiled in the speaker mode and the note will be displayed as text in the control window. Only use "right" if the slides are compiled in the speaker mode with `config-common(show-notes-on-second-screen: right)`.
 ```
+
+### Example
+
+```bash
+cd examples/
+wget 'https://download.samplelib.com/mp4/sample-5s.mp4'
+gen-slide slides.typ
+```
+
+Then an HTML file, `slides.html`, will be generated in the same directory. Open it with a browser
+to view the slides.
