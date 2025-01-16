@@ -244,15 +244,32 @@ class Compiler:
 
 
 def mian(
-    typst_src,
+    typst_src: str,
     output_file=None,
     svg_folder="svgs",
-    template_file="",
+    template_file=None,
     note: Literal["", "right"] = "",
 ):
+    """
+    process Typst source files and generate HTML output.
+
+    Args:
+        typst_src (str): Path to the Typst source file.
+        output_file (str, optional): Path to the output HTML file.
+        svg_folder (str, optional): Folder containing SVG files.
+        template_file (str, optional): Path to the template file.
+        note (Literal["", "right"], optional): Note position. If not specified, assumpe that the slides are not compiled in the speaker mode and the note will be displayed as text in the control window. Only use "right" if the slides are compiled in the speaker mode with `config-common(show-notes-on-second-screen: right)`.
+
+    Raises:
+        Exception: If the template file is not found.
+        Exception: If no SVG files are found in the specified folder.
+    """
     svg_folder_path = Path(svg_folder)
     typst_src_path = Path(typst_src)
-    template_file = Path(template_file) if template_file != "" else None
+    if template_file is not None:
+        template_file = Path(template_file)
+        if not template_file.exists():
+            raise Exception(f"Template file '{template_file}' not found")
     if output_file is None:
         output_file = typst_src_path.with_suffix(".html")
     else:
