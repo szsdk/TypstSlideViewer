@@ -5,7 +5,7 @@ import re
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional, Union
 
 import fire
 import jinja2
@@ -29,12 +29,13 @@ class MetaInfo(BaseModel):
     pages: dict[int, Page]
 
 
-def format_size(size):
+def format_size(size: Union[int, float]) -> str:
     # Convert bytes to a human-readable format
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
+    for unit in ["B", "KB", "MB", "GB"]:
         if size < 1024:
             return f"{size:.2f} {unit}"
         size /= 1024
+    return f"{size:.2f} TB"
 
 
 def init_pages(raw_pages):
@@ -62,7 +63,6 @@ def init_meta_info(fn):
     # Iterate over the pages to populate the maps
     for page in pages.values():
         page_label = int(page.label)
-        # if page_label not in jump_map:
         jump_map[page_label] = min(jump_map.get(page_label, len(pages) + 1), page.idx)
         thumbnail_map[page_label] = max(0, page.idx)
 
@@ -192,17 +192,67 @@ def init_svg_folder(typst_src, svg_folder):
             find_and_replace_images(f, svg_folder_path / f"modified_{f.name}")
 
 
+class Compiler:
+    def __init__(self, note, meta_info: MetaInfo, template_file: Optional[Path]):
+        if template_file is None:
+            with importlib.resources.path("typstslideviewer", "template.j2.html") as p:
+                template = jinja2.Template(p.read_text())
+        else:
+            template = jinja2.Template(template_file.read_text())
+
+        self._js_libs = {}
+        for lib_name, file_name in [
+            (
+                "fzstd_js",
+                "fzstd.js",
+            ),  # https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js
+            (
+                "tar_js",
+                "tarts.min.js",
+            ),  # https://cdn.jsdelivr.net/npm/tarts@1.0.0/dist/tarts.min.js
+        ]:
+            with importlib.resources.path("typstslideviewer", file_name) as p:
+                self._js_libs[lib_name] = p.read_text()
+
+        self.template = template
+        self.window_log = 29
+        self.compression_level = 4
+        self.note = note
+        self.meta_info = meta_info
+
+    def __call__(self, svgs: dict[int, str]):
+        compressor = zstd.ZstdCompressor(
+            compression_params=zstd.ZstdCompressionParameters.from_level(
+                self.compression_level, window_log=self.window_log
+            )
+        )
+        logger.info("Start compressing JSON data")
+        compressed_data = compressor.compress(json.dumps(svgs).encode("utf-8"))
+        logger.info(f"Compressed data size: {format_size(len(compressed_data))}")
+
+        # Step 4: Encode the compressed data to Base64
+        base64_encoded = base64.b64encode(compressed_data).decode("utf-8")
+        logger.info(f"Base64 encoded data size: {format_size(len(base64_encoded))}")
+
+        return self.template.render(
+            total_files=len(svgs),
+            slide_64=base64_encoded,
+            note=self.note,
+            **self._js_libs,
+            **self.meta_info.model_dump(mode="json"),
+        )
+
+
 def mian(
     typst_src,
     output_file=None,
     svg_folder="svgs",
     template_file="",
-    note="",
+    note: Literal["", "right"] = "",
 ):
     svg_folder_path = Path(svg_folder)
     typst_src_path = Path(typst_src)
-    if template_file != "":
-        template_file = Path(template_file)
+    template_file = Path(template_file) if template_file != "" else None
     if output_file is None:
         output_file = typst_src_path.with_suffix(".html")
     else:
@@ -214,51 +264,20 @@ def mian(
         logger.info("SVG folder is outdated or missing, initializing")
         init_svg_folder(typst_src_path, svg_folder_path)
 
-    # Get list of SVG files
-    svg_files = [f.name for f in sorted(svg_folder_path.glob("modified_*.svg"))]
+    svg_files = list(sorted(svg_folder_path.glob("modified_*.svg")))
     if not svg_files:
         raise Exception(f"No SVG files found in the '{svg_folder}' folder")
 
     meta_info = init_meta_info(svg_folder_path / "meta.json")
-
-    if isinstance(template_file, Path):
-        template = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(Path())
-        ).get_template(template_file.name)
-    elif template_file == "":
-        with importlib.resources.path("typstslideviewer", "template.j2.html") as p:
-            template = jinja2.Template(p.read_text())
+    compiler = Compiler(note, meta_info, template_file)
 
     svgs = {}
-    for f in map(Path, svg_files):
+    for f in svg_files:
         idx = int(f.stem.split("_")[-1])
-        with open(svg_folder_path / f) as svg_fp:
-            svgs[idx - 1] = svg_fp.read()
-    json_string = json.dumps(svgs)
-
-    # Step 3: Compress the JSON string using Zstd
-    compressor = zstd.ZstdCompressor(
-        compression_params=zstd.ZstdCompressionParameters.from_level(4, window_log=29)
-    )
-    logger.info("Start compressing JSON data")
-    compressed_data = compressor.compress(json_string.encode("utf-8"))
-    logger.info(f"Compressed data size: {format_size(len(compressed_data))}")
-
-    # Step 4: Encode the compressed data to Base64
-    base64_encoded = base64.b64encode(compressed_data).decode("utf-8")
-    logger.info(f"Base64 encoded data size: {format_size(len(base64_encoded))}")
+        svgs[idx - 1] = f.read_text()
 
     with open(output_file, "w") as fp:
-        print(
-            template.render(
-                total_files=len(svg_files),
-                slide_64=base64_encoded,
-                note=note,
-                # slides=svgs,
-                **meta_info.model_dump(mode="json"),
-            ),
-            file=fp,
-        )
+        print(compiler(svgs), file=fp)
 
 
 def cli():
