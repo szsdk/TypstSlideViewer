@@ -1,9 +1,11 @@
 import base64
 import importlib.resources
+import io
 import json
 import re
 import subprocess
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional, Union
 
@@ -11,6 +13,7 @@ import fire
 import jinja2
 import zstandard as zstd
 from loguru import logger
+from PIL import Image
 from pydantic import BaseModel, ConfigDict
 
 
@@ -83,6 +86,15 @@ def strip_namespace(element):
             elem.tag = elem.tag.split("}", 1)[1]
 
 
+@lru_cache
+def convert_to_webp(img_base64):
+    png_data = decode_base64_data(img_base64)
+    png_image = Image.open(io.BytesIO(png_data))
+    webp_io = io.BytesIO()
+    png_image.save(webp_io, format="WEBP", optimize=True, quality=80)
+    return base64.b64encode(webp_io.getvalue()).decode("utf-8")
+
+
 def find_and_replace_images(svg_file, output_file):
     ET.register_namespace("", "http://www.w3.org/2000/svg")
     ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
@@ -133,6 +145,20 @@ def find_and_replace_images(svg_file, output_file):
                 parent = parent_map[image]
                 parent.remove(image)
                 parent.append(foreign_object)
+            else:
+                parent = parent_map[image]
+                parent.remove(image)
+                for attr in image.attrib:
+                    if attr != "{http://www.w3.org/1999/xlink}href":
+                        decoded_svg.attrib[attr] = image.attrib[attr]
+                parent.append(decoded_svg)
+
+    for image in root.findall(".//{http://www.w3.org/2000/svg}image", namespaces):
+        href = image.get("{http://www.w3.org/1999/xlink}href")
+        if href and href.startswith("data:image/png;base64,"):
+            image.attrib["{http://www.w3.org/1999/xlink}href"] = (
+                f"data:image/webp;base64,{convert_to_webp(href)}"
+            )
 
     # Write the modified SVG back to a file
     strip_namespace(root)
