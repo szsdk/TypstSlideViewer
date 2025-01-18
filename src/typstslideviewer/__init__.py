@@ -87,7 +87,7 @@ def strip_namespace(element):
 
 
 @lru_cache
-def convert_to_webp(img_base64):
+def convert_to_webp(img_base64, quality=80):
     png_data = decode_base64_data(img_base64)
     png_image = Image.open(io.BytesIO(png_data))
     webp_io = io.BytesIO()
@@ -95,87 +95,93 @@ def convert_to_webp(img_base64):
     return base64.b64encode(webp_io.getvalue()).decode("utf-8")
 
 
-def find_and_replace_images(svg_file, output_file):
-    ET.register_namespace("", "http://www.w3.org/2000/svg")
-    ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
-    tree = ET.parse(svg_file)
-    root = tree.getroot()
+class SVGOptimizer(BaseModel):
+    optimize_png: bool
+    webp_quality: int = 80
 
-    # Create a parent map
-    parent_map = {c: p for p in tree.iter() for c in p}
+    def inline_foreignObject(self, tree):
+        parent_map = {c: p for p in tree.iter() for c in p}
+        root = tree.getroot()
+        namespaces = {"xlink": "http://www.w3.org/1999/xlink"}
 
-    # Define the namespace
-    namespaces = {"xlink": "http://www.w3.org/1999/xlink"}
+        # Find all <image> elements with xlink:href attribute
+        for image in root.findall(".//{http://www.w3.org/2000/svg}image", namespaces):
+            href = image.get("{http://www.w3.org/1999/xlink}href")
+            if href and href.startswith("data:image/svg+xml;base64,"):
+                decoded_data = decode_base64_data(href)
+                decoded_svg = ET.fromstring(decoded_data.decode("utf-8"))
 
-    # Find all <image> elements with xlink:href attribute
-    for image in root.findall(".//{http://www.w3.org/2000/svg}image", namespaces):
-        href = image.get("{http://www.w3.org/1999/xlink}href")
-        if href and href.startswith("data:image/svg+xml;base64,"):
-            decoded_data = decode_base64_data(href)
-            decoded_svg = ET.fromstring(decoded_data.decode("utf-8"))
+                # Find the <foreignObject> element in the decoded SVG
+                foreign_object = decoded_svg.find(
+                    ".//{http://www.w3.org/2000/svg}foreignObject"
+                )
+                if foreign_object is not None:
+                    # Replace the <image> node with the <foreignObject> node
 
-            # Find the <foreignObject> element in the decoded SVG
-            foreign_object = decoded_svg.find(
-                ".//{http://www.w3.org/2000/svg}foreignObject"
-            )
-            if foreign_object is not None:
-                # Replace the <image> node with the <foreignObject> node
+                    children = list(foreign_object)
+                    if (
+                        len(children) == 1
+                        and children[0].tag == "{http://www.w3.org/1999/xhtml}video"
+                    ):
+                        source_element = children[0].find(
+                            "{http://www.w3.org/1999/xhtml}source"
+                        )
+                        if source_element is not None:
+                            src = source_element.attrib.get("src")
+                            if src and src.endswith(".mp4"):
+                                video_path = Path(src)
+                                if video_path.exists():
+                                    with open(video_path, "rb") as video_file:
+                                        base64_video = base64.b64encode(
+                                            video_file.read()
+                                        ).decode("utf-8")
+                                        source_element.attrib["src"] = (
+                                            f"data:video/mp4;base64,{base64_video}"
+                                        )
 
-                children = list(foreign_object)
-                if (
-                    len(children) == 1
-                    and children[0].tag == "{http://www.w3.org/1999/xhtml}video"
-                ):
-                    source_element = children[0].find(
-                        "{http://www.w3.org/1999/xhtml}source"
-                    )
-                    if source_element is not None:
-                        src = source_element.attrib.get("src")
-                        if src and src.endswith(".mp4"):
-                            video_path = Path(src)
-                            if video_path.exists():
-                                with open(video_path, "rb") as video_file:
-                                    base64_video = base64.b64encode(
-                                        video_file.read()
-                                    ).decode("utf-8")
-                                    source_element.attrib["src"] = (
-                                        f"data:video/mp4;base64,{base64_video}"
-                                    )
+                    parent = parent_map[image]
+                    parent.remove(image)
+                    parent.append(foreign_object)
 
-                parent = parent_map[image]
-                parent.remove(image)
-                parent.append(foreign_object)
-            else:
-                parent = parent_map[image]
-                parent.remove(image)
-                for attr in image.attrib:
-                    if attr != "{http://www.w3.org/1999/xlink}href":
-                        decoded_svg.attrib[attr] = image.attrib[attr]
-                parent.append(decoded_svg)
+    def _optimize_png(self, tree):
+        root = tree.getroot()
+        namespaces = {"xlink": "http://www.w3.org/1999/xlink"}
 
-    for image in root.findall(".//{http://www.w3.org/2000/svg}image", namespaces):
-        href = image.get("{http://www.w3.org/1999/xlink}href")
-        if href and href.startswith("data:image/png;base64,"):
-            image.attrib["{http://www.w3.org/1999/xlink}href"] = (
-                f"data:image/webp;base64,{convert_to_webp(href)}"
-            )
+        # Find all <image> elements with xlink:href attribute
+        for image in root.findall(".//{http://www.w3.org/2000/svg}image", namespaces):
+            href = image.get("{http://www.w3.org/1999/xlink}href")
+            if href is None:
+                pass
+            elif href.startswith("data:image/png;base64,"):
+                image.attrib["{http://www.w3.org/1999/xlink}href"] = (
+                    f"data:image/webp;base64,{convert_to_webp(href, self.webp_quality)}"
+                )
+            elif href and href.startswith("data:image/svg+xml;base64,"):
+                t = ET.ElementTree(
+                    ET.fromstring(decode_base64_data(href).decode("utf-8"))
+                )
+                self._optimize_png(t)
+                data = ET.tostring(
+                    t.getroot(), encoding="unicode", short_empty_elements=False
+                )
+                image.attrib["{http://www.w3.org/1999/xlink}href"] = (
+                    f"data:image/svg+xml;base64,{base64.b64encode(data.encode('utf-8')).decode('utf-8')}"
+                )
 
-    # Write the modified SVG back to a file
-    strip_namespace(root)
-    with open(output_file, "w") as fp:
+    def optimize(self, svgstring):
+        # tree = ET.parse(svg_file)
+        tree = ET.ElementTree(ET.fromstring(svgstring))
+        root = tree.getroot()
+        self._optimize_png(tree)
+        self.inline_foreignObject(tree)
+
+        # Write the modified SVG back to a file
+        strip_namespace(root)
         img = ET.tostring(root, encoding="unicode", short_empty_elements=False)
-        print(
-            re.sub(
-                r'width="([0-9\.]+)pt" height="([0-9\.]+)pt"',
-                # 'width="100%" height="100%"',
-                "",
-                img,
-            ),
-            file=fp,
-        )
+        return re.sub(r'width="([0-9\.]+)pt" height="([0-9\.]+)pt"', "", img)
 
 
-def init_svg_folder(typst_src, svg_folder):
+def init_svg_folder(typst_src, svg_folder, optimizer: SVGOptimizer):
     logger.info("Initializing SVG folder")
     svg_folder_path = Path(svg_folder)
     typst_src_path = Path(typst_src)
@@ -214,8 +220,13 @@ def init_svg_folder(typst_src, svg_folder):
     compile_process.communicate()
     if compile_process.returncode == 0:
         logger.info("Compilation successful, processing SVG files")
+        ET.register_namespace("", "http://www.w3.org/2000/svg")
+        ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
         for f in svg_folder_path.rglob("slide_*.svg"):
-            find_and_replace_images(f, svg_folder_path / f"modified_{f.name}")
+            svgstring = f.read_text()
+            with (svg_folder_path / f"modified_{f.name}").open("w") as fp:
+                print(optimizer.optimize(svgstring), file=fp)
+                # print(_ind_and_replace_images(svgstring), file=fp)
 
 
 class Compiler:
@@ -274,6 +285,8 @@ def mian(
     output_file=None,
     svg_folder="svgs",
     template_file=None,
+    optimize_png: bool = True,
+    webp_quality: int = 80,
     note: Literal["", "right"] = "",
 ):
     """
@@ -305,7 +318,12 @@ def mian(
         typst_src_path.stat().st_mtime > (svg_folder_path / "meta.json").stat().st_mtime
     ):
         logger.info("SVG folder is outdated or missing, initializing")
-        init_svg_folder(typst_src_path, svg_folder_path)
+
+        init_svg_folder(
+            typst_src_path,
+            svg_folder_path,
+            SVGOptimizer(optimize_png=optimize_png, webp_quality=webp_quality),
+        )
 
     svg_files = list(sorted(svg_folder_path.glob("modified_*.svg")))
     if not svg_files:
