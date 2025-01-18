@@ -87,16 +87,17 @@ def strip_namespace(element):
 
 
 @lru_cache
-def convert_to_webp(img_base64, quality=80):
+def convert_to_webp(img_base64, quality=90):
     png_data = decode_base64_data(img_base64)
     png_image = Image.open(io.BytesIO(png_data))
     webp_io = io.BytesIO()
-    png_image.save(webp_io, format="WEBP", optimize=True, quality=80)
+    png_image.save(webp_io, format="WEBP", optimize=True, quality=quality)
     return base64.b64encode(webp_io.getvalue()).decode("utf-8")
 
 
 class SVGOptimizer(BaseModel):
     optimize_png: bool
+    optimize_jpg: bool
     webp_quality: int = 80
 
     def inline_foreignObject(self, tree):
@@ -104,20 +105,16 @@ class SVGOptimizer(BaseModel):
         root = tree.getroot()
         namespaces = {"xlink": "http://www.w3.org/1999/xlink"}
 
-        # Find all <image> elements with xlink:href attribute
         for image in root.findall(".//{http://www.w3.org/2000/svg}image", namespaces):
             href = image.get("{http://www.w3.org/1999/xlink}href")
             if href and href.startswith("data:image/svg+xml;base64,"):
                 decoded_data = decode_base64_data(href)
                 decoded_svg = ET.fromstring(decoded_data.decode("utf-8"))
 
-                # Find the <foreignObject> element in the decoded SVG
                 foreign_object = decoded_svg.find(
                     ".//{http://www.w3.org/2000/svg}foreignObject"
                 )
                 if foreign_object is not None:
-                    # Replace the <image> node with the <foreignObject> node
-
                     children = list(foreign_object)
                     if (
                         len(children) == 1
@@ -143,7 +140,7 @@ class SVGOptimizer(BaseModel):
                     parent.remove(image)
                     parent.append(foreign_object)
 
-    def _optimize_png(self, tree):
+    def _optimize_bitmap(self, tree):
         root = tree.getroot()
         namespaces = {"xlink": "http://www.w3.org/1999/xlink"}
 
@@ -152,7 +149,11 @@ class SVGOptimizer(BaseModel):
             href = image.get("{http://www.w3.org/1999/xlink}href")
             if href is None:
                 pass
-            elif href.startswith("data:image/png;base64,"):
+            elif self.optimize_png and href.startswith("data:image/png;base64,"):
+                image.attrib["{http://www.w3.org/1999/xlink}href"] = (
+                    f"data:image/webp;base64,{convert_to_webp(href, self.webp_quality)}"
+                )
+            elif self.optimize_jpg and href.startswith("data:image/jpeg;base64,"):
                 image.attrib["{http://www.w3.org/1999/xlink}href"] = (
                     f"data:image/webp;base64,{convert_to_webp(href, self.webp_quality)}"
                 )
@@ -160,7 +161,7 @@ class SVGOptimizer(BaseModel):
                 t = ET.ElementTree(
                     ET.fromstring(decode_base64_data(href).decode("utf-8"))
                 )
-                self._optimize_png(t)
+                self._optimize_bitmap(t)
                 data = ET.tostring(
                     t.getroot(), encoding="unicode", short_empty_elements=False
                 )
@@ -172,7 +173,7 @@ class SVGOptimizer(BaseModel):
         # tree = ET.parse(svg_file)
         tree = ET.ElementTree(ET.fromstring(svgstring))
         root = tree.getroot()
-        self._optimize_png(tree)
+        self._optimize_bitmap(tree)
         self.inline_foreignObject(tree)
 
         # Write the modified SVG back to a file
@@ -286,6 +287,7 @@ def mian(
     svg_folder="svgs",
     template_file=None,
     optimize_png: bool = True,
+    optimize_jpg: bool = True,
     webp_quality: int = 80,
     note: Literal["", "right"] = "",
 ):
@@ -322,7 +324,11 @@ def mian(
         init_svg_folder(
             typst_src_path,
             svg_folder_path,
-            SVGOptimizer(optimize_png=optimize_png, webp_quality=webp_quality),
+            SVGOptimizer(
+                optimize_png=optimize_png,
+                optimize_jpg=optimize_jpg,
+                webp_quality=webp_quality,
+            ),
         )
 
     svg_files = list(sorted(svg_folder_path.glob("modified_*.svg")))
