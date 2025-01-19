@@ -9,7 +9,8 @@ pip install .
 ## Usage
 
 After the installation, the `gen-slide` command will be available in the terminal.
-```
+
+```text
 SYNOPSIS
     gen-slide TYPST_SRC <flags>
 
@@ -44,5 +45,5 @@ wget 'https://download.samplelib.com/mp4/sample-5s.mp4'
 gen-slide slides.typ
 ```
 
-Then an HTML file, `slides.html`, will be generated in the same directory. Open it with a browser
-to view the slides.
+Then an HTML file, `slides.html`, will be generated in the same directory.
+Open it with a browser to view the slides.

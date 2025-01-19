@@ -207,27 +207,41 @@ def init_svg_folder(typst_src, svg_folder, optimizer: SVGOptimizer):
         text=True,
     )
 
+    compile_process.communicate()
+    if compile_process.returncode != 0:
+        logger.error("Compilation failed")
+        raise Exception(compile_process.stderr.read())
+
+    logger.info("Compilation successful, processing SVG files")
+    ET.register_namespace("", "http://www.w3.org/2000/svg")
+    ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
+    slide_fns = list(svg_folder_path.rglob("slide_*.svg"))
+    for f in slide_fns:
+        svgstring = f.read_text()
+        with (svg_folder_path / f"modified_{f.name}").open("w") as fp:
+            print(optimizer.optimize(svgstring), file=fp)
+
     query_stdout, query_stderr = query_process.communicate()
 
+    meta_path = svg_folder_path / "meta.json"
+    meta = []
     if query_process.returncode == 0:
+        meta = json.loads(query_stdout)
+    if len(meta) > 0:
+        meta = meta[0]
         logger.info("Query successful, processing metadata")
-        meta = json.loads(query_stdout)[0]
-        with open(svg_folder_path / "meta.json", "w") as fp:
-            json.dump(meta, fp, indent=2)
     else:
+        logger.warning("Query failed")
         logger.error(query_stderr)
-        raise Exception("Failed to query the Typst file")
+        meta = {
+            "pages": [
+                Page(idx=i, label=i + 1, forcedOverlay=False, hidden=False).model_dump()
+                for i in range(len(slide_fns))
+            ]
+        }
 
-    compile_process.communicate()
-    if compile_process.returncode == 0:
-        logger.info("Compilation successful, processing SVG files")
-        ET.register_namespace("", "http://www.w3.org/2000/svg")
-        ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
-        for f in svg_folder_path.rglob("slide_*.svg"):
-            svgstring = f.read_text()
-            with (svg_folder_path / f"modified_{f.name}").open("w") as fp:
-                print(optimizer.optimize(svgstring), file=fp)
-                # print(_ind_and_replace_images(svgstring), file=fp)
+    with meta_path.open("w") as fp:
+        json.dump(meta, fp, indent=2)
 
 
 class Compiler:
