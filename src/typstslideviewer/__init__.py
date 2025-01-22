@@ -1,4 +1,5 @@
 import base64
+import concurrent.futures
 import importlib.resources
 import io
 import json
@@ -11,6 +12,7 @@ from typing import Literal, Optional, Union
 
 import fire
 import jinja2
+import pillow_avif
 import zstandard as zstd
 from loguru import logger
 from PIL import Image
@@ -88,17 +90,31 @@ def strip_namespace(element):
 
 @lru_cache
 def convert_to_webp(img_base64, quality=90):
-    png_data = decode_base64_data(img_base64)
-    png_image = Image.open(io.BytesIO(png_data))
+    data = decode_base64_data(img_base64)
+    image = Image.open(io.BytesIO(data))
     webp_io = io.BytesIO()
-    png_image.save(webp_io, format="WEBP", optimize=True, quality=quality)
-    return base64.b64encode(webp_io.getvalue()).decode("utf-8")
+    image.save(webp_io, format="WEBP", optimize=True, quality=quality)
+    return (
+        f"data:image/webp;base64,{base64.b64encode(webp_io.getvalue()).decode('utf-8')}"
+    )
+
+
+@lru_cache
+def convert_to_avif(img_base64, quality=90):
+    data = decode_base64_data(img_base64)
+    image = Image.open(io.BytesIO(data))
+    avif_io = io.BytesIO()
+    image.save(avif_io, format="AVIF", optimize=True, quality=quality)
+    return (
+        f"data:image/avif;base64,{base64.b64encode(avif_io.getvalue()).decode('utf-8')}"
+    )
 
 
 class SVGOptimizer(BaseModel):
     optimize_png: bool
     optimize_jpg: bool
-    webp_quality: int = 80
+    output_format: Literal["webp", "avif"] = "webp"
+    quality: int = 80
 
     def inline_foreignObject(self, tree):
         parent_map = {c: p for p in tree.iter() for c in p}
@@ -144,18 +160,24 @@ class SVGOptimizer(BaseModel):
         root = tree.getroot()
         namespaces = {"xlink": "http://www.w3.org/1999/xlink"}
 
+        if self.output_format == "webp":
+            convert_func = convert_to_webp
+        elif self.output_format == "avif":
+            convert_func = convert_to_avif
+        else:
+            raise ValueError(f"Invalid output format: {self.output_format}")
         # Find all <image> elements with xlink:href attribute
         for image in root.findall(".//{http://www.w3.org/2000/svg}image", namespaces):
             href = image.get("{http://www.w3.org/1999/xlink}href")
             if href is None:
                 pass
             elif self.optimize_png and href.startswith("data:image/png;base64,"):
-                image.attrib["{http://www.w3.org/1999/xlink}href"] = (
-                    f"data:image/webp;base64,{convert_to_webp(href, self.webp_quality)}"
+                image.attrib["{http://www.w3.org/1999/xlink}href"] = convert_func(
+                    href, self.quality
                 )
             elif self.optimize_jpg and href.startswith("data:image/jpeg;base64,"):
-                image.attrib["{http://www.w3.org/1999/xlink}href"] = (
-                    f"data:image/webp;base64,{convert_to_webp(href, self.webp_quality)}"
+                image.attrib["{http://www.w3.org/1999/xlink}href"] = convert_func(
+                    href, self.quality
                 )
             elif href and href.startswith("data:image/svg+xml;base64,"):
                 t = ET.ElementTree(
@@ -180,6 +202,12 @@ class SVGOptimizer(BaseModel):
         strip_namespace(root)
         img = ET.tostring(root, encoding="unicode", short_empty_elements=False)
         return re.sub(r'width="([0-9\.]+)pt" height="([0-9\.]+)pt"', "", img)
+
+
+def process_file(f, svg_folder_path, optimizer):
+    svgstring = f.read_text()
+    with (svg_folder_path / f"modified_{f.name}").open("w") as fp:
+        print(optimizer.optimize(svgstring), file=fp)
 
 
 def init_svg_folder(typst_src, svg_folder, optimizer: SVGOptimizer):
@@ -216,10 +244,17 @@ def init_svg_folder(typst_src, svg_folder, optimizer: SVGOptimizer):
     ET.register_namespace("", "http://www.w3.org/2000/svg")
     ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
     slide_fns = list(svg_folder_path.rglob("slide_*.svg"))
-    for f in slide_fns:
-        svgstring = f.read_text()
-        with (svg_folder_path / f"modified_{f.name}").open("w") as fp:
-            print(optimizer.optimize(svgstring), file=fp)
+
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = [
+            executor.submit(process_file, f, svg_folder_path, optimizer)
+            for f in slide_fns
+        ]
+        concurrent.futures.wait(futures)
+    # for f in slide_fns:
+    #     svgstring = f.read_text()
+    #     with (svg_folder_path / f"modified_{f.name}").open("w") as fp:
+    #         print(optimizer.optimize(svgstring), file=fp)
 
     query_stdout, query_stderr = query_process.communicate()
 
@@ -302,18 +337,23 @@ def mian(
     template_file=None,
     optimize_png: bool = True,
     optimize_jpg: bool = True,
-    webp_quality: int = 80,
+    quality: int = 80,
+    image_format: Literal["webp", "avif"] = "webp",
     note: Literal["", "right"] = "",
 ):
     """
-    process Typst source files and generate HTML output.
+    Process Typst source files and generate HTML output.
 
     Args:
         typst_src (str): Path to the Typst source file.
         output_file (str, optional): Path to the output HTML file.
         svg_folder (str, optional): Folder containing SVG files.
         template_file (str, optional): Path to the template file.
-        note (Literal["", "right"], optional): Note position. If not specified, assumpe that the slides are not compiled in the speaker mode and the note will be displayed as text in the control window. Only use "right" if the slides are compiled in the speaker mode with `config-common(show-notes-on-second-screen: right)`.
+        optimize_png (bool, optional): Whether to optimize PNG images.
+        optimize_jpg (bool, optional): Whether to optimize JPG images.
+        quality (int, optional): Quality of the optimized images.
+        image_format (Literal["webp", "avif"], optional): Format of the optimized images.
+        note (Literal["", "right"], optional): Note position. If not specified, assume that the slides are not compiled in the speaker mode and the note will be displayed as text in the control window. Only use "right" if the slides are compiled in the speaker mode with `config-common(show-notes-on-second-screen: right)`.
 
     Raises:
         Exception: If the template file is not found.
@@ -341,7 +381,8 @@ def mian(
             SVGOptimizer(
                 optimize_png=optimize_png,
                 optimize_jpg=optimize_jpg,
-                webp_quality=webp_quality,
+                quality=quality,
+                output_format=image_format,
             ),
         )
 
