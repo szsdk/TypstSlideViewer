@@ -339,6 +339,7 @@ def mian(
     optimize_jpg: bool = True,
     quality: int = 80,
     image_format: Literal["webp", "avif"] = "webp",
+    force: bool = False,
     note: Literal["", "right"] = "",
 ):
     """
@@ -353,6 +354,7 @@ def mian(
         optimize_jpg (bool, optional): Whether to optimize JPG images.
         quality (int, optional): Quality of the optimized images.
         image_format (Literal["webp", "avif"], optional): Format of the optimized images.
+        force (bool, optional): Force re-initialization of the SVG folder.
         note (Literal["", "right"], optional): Note position. If not specified, assume that the slides are not compiled in the speaker mode and the note will be displayed as text in the control window. Only use "right" if the slides are compiled in the speaker mode with `config-common(show-notes-on-second-screen: right)`.
 
     Raises:
@@ -370,10 +372,15 @@ def mian(
     else:
         output_file = Path(output_file)
 
-    if (not (svg_folder_path / "meta.json").exists()) or (
-        typst_src_path.stat().st_mtime > (svg_folder_path / "meta.json").stat().st_mtime
+    if (
+        (not (svg_folder_path / "meta.json").exists())
+        or (
+            typst_src_path.stat().st_mtime
+            > (svg_folder_path / "meta.json").stat().st_mtime
+        )
+        or force
     ):
-        logger.info("SVG folder is outdated or missing, initializing")
+        logger.info("initializing")
 
         init_svg_folder(
             typst_src_path,
