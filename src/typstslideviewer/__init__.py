@@ -12,7 +12,6 @@ from typing import Literal, Optional, Union
 
 import fire
 import jinja2
-import pillow_avif
 import zstandard as zstd
 from loguru import logger
 from PIL import Image
@@ -280,7 +279,13 @@ def init_svg_folder(typst_src, svg_folder, optimizer: SVGOptimizer):
 
 
 class Compiler:
-    def __init__(self, note, meta_info: MetaInfo, template_file: Optional[Path]):
+    def __init__(
+        self,
+        note,
+        meta_info: MetaInfo,
+        template_file: Optional[Path],
+        transition: bool = True,
+    ):
         if template_file is None:
             with importlib.resources.path("typstslideviewer", "template.j2.html") as p:
                 template = jinja2.Template(p.read_text())
@@ -306,6 +311,7 @@ class Compiler:
         self.compression_level = 4
         self.note = note
         self.meta_info = meta_info
+        self.transition = transition
 
     def __call__(self, svgs: dict[int, str]):
         compressor = zstd.ZstdCompressor(
@@ -324,6 +330,7 @@ class Compiler:
         return self.template.render(
             total_files=len(svgs),
             slide_64=base64_encoded,
+            no_animation=not self.transition,
             note=self.note,
             **self._js_libs,
             **self.meta_info.model_dump(mode="json"),
@@ -341,6 +348,7 @@ def mian(
     image_format: Literal["webp", "avif"] = "webp",
     force: bool = False,
     note: Literal["", "right"] = "",
+    transition: bool = True,
 ):
     """
     Process Typst source files and generate HTML output.
@@ -398,7 +406,7 @@ def mian(
         raise Exception(f"No SVG files found in the '{svg_folder}' folder")
 
     meta_info = init_meta_info(svg_folder_path / "meta.json")
-    compiler = Compiler(note, meta_info, template_file)
+    compiler = Compiler(note, meta_info, template_file, transition=transition)
 
     svgs = {}
     for f in svg_files:

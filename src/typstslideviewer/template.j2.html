@@ -207,6 +207,7 @@ let tool = '';
 let lastPoint = null;
 let penColor = '#ff0000'; // Default color
 let penLineWidth = 2;
+let noAnimation = {{ no_animation | lower }};
 
 function get_svg_cache(){
   const base64String = {{ slide_64 | tojson }};
@@ -490,6 +491,9 @@ function loadSVGWithAnimation(oldIdx, newIdx, specifiedAnimation = null) {
     animationType = 'left-to-right';
   }
 
+if (noAnimation) {
+    animationType = 'no-animation';
+  }
   loadSVG(newIdx, animationType);
   return newIdx;
 }
