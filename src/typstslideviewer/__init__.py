@@ -81,10 +81,23 @@ def decode_base64_data(data):
 
 
 def strip_namespace(element):
+    """
+    Remove namespace prefixes from tags and attributes in the element and its children.
+    """
     for elem in element.iter():
-        # Remove the namespace prefix
-        if "}" in elem.tag:
+        # Remove the namespace prefix from tag
+        if isinstance(elem.tag, str) and "}" in elem.tag:
             elem.tag = elem.tag.split("}", 1)[1]
+
+        # Handle attributes with namespaces
+        new_attrs = {}
+        for key, value in elem.attrib.items():
+            if isinstance(key, str) and "}" in key:
+                new_key = key.split("}", 1)[1]
+                new_attrs[new_key] = value
+            else:
+                new_attrs[key] = value
+        elem.attrib = new_attrs
 
 
 @lru_cache
@@ -116,6 +129,10 @@ class SVGOptimizer(BaseModel):
     quality: int = 80
 
     def inline_foreignObject(self, tree):
+        """
+        Detects SVG-in-SVG data URIs used for foreignObject content (like video or xhtml)
+        and inlines them as true foreignObject elements while preserving positioning.
+        """
         parent_map = {c: p for p in tree.iter() for c in p}
         root = tree.getroot()
         namespaces = {"xlink": "http://www.w3.org/1999/xlink"}
@@ -124,32 +141,58 @@ class SVGOptimizer(BaseModel):
             href = image.get("{http://www.w3.org/1999/xlink}href")
             if href and href.startswith("data:image/svg+xml;base64,"):
                 decoded_data = decode_base64_data(href)
-                decoded_svg = ET.fromstring(decoded_data.decode("utf-8"))
+                # Parse decoded SVG
+                inner_tree = ET.fromstring(decoded_data.decode("utf-8"))
 
-                foreign_object = decoded_svg.find(
+                # Find foreignObject in the decoded SVG
+                foreign_object = inner_tree.find(
                     ".//{http://www.w3.org/2000/svg}foreignObject"
                 )
+                if foreign_object is None:
+                    foreign_object = inner_tree.find(".//foreignObject")
+
                 if foreign_object is not None:
+                    # Specific handling for video elements
                     children = list(foreign_object)
                     if (
                         len(children) == 1
-                        and children[0].tag == "{http://www.w3.org/1999/xhtml}video"
+                        and (children[0].tag == "{http://www.w3.org/1999/xhtml}video" or children[0].tag.endswith("video"))
                     ):
-                        source_element = children[0].find(
-                            "{http://www.w3.org/1999/xhtml}source"
-                        )
+                        video_element = children[0]
+                        video_element.set("width", "100%")
+                        video_element.set("height", "100%")
+                        video_element.set("style", "width: 100%; height: 100%;")
+                        
+                        source_element = video_element.find("{http://www.w3.org/1999/xhtml}source")
+                        if source_element is None:
+                             source_element = video_element.find("source")
+                             
                         if source_element is not None:
                             src = source_element.attrib.get("src")
                             if src and src.endswith(".mp4"):
                                 video_path = Path(src)
                                 if video_path.exists():
                                     with open(video_path, "rb") as video_file:
-                                        base64_video = base64.b64encode(
-                                            video_file.read()
-                                        ).decode("utf-8")
-                                        source_element.attrib["src"] = (
-                                            f"data:video/mp4;base64,{base64_video}"
-                                        )
+                                        base64_video = base64.b64encode(video_file.read()).decode("utf-8")
+                                        source_element.attrib["src"] = f"data:video/mp4;base64,{base64_video}"
+
+                    # Copy attributes from <image> to <foreignObject> to preserve position and size
+                    foreign_object.attrib.clear()
+                    for attr_name, attr_value in image.attrib.items():
+                        if attr_name != "{http://www.w3.org/1999/xlink}href":
+                            foreign_object.set(attr_name, attr_value)
+                    
+                    # Ensure positioning attributes are explicitly set if they were in a namespace
+                    for attr in ["transform", "x", "y", "width", "height"]:
+                        if attr not in foreign_object.attrib:
+                            val = image.get(attr)
+                            if val:
+                                foreign_object.set(attr, val)
+                            else:
+                                # Check for namespaced versions
+                                for k, v in image.attrib.items():
+                                    if k.endswith("}" + attr):
+                                        foreign_object.set(attr, v)
 
                     parent = parent_map[image]
                     parent.remove(image)
@@ -165,48 +208,46 @@ class SVGOptimizer(BaseModel):
             convert_func = convert_to_avif
         else:
             raise ValueError(f"Invalid output format: {self.output_format}")
+            
         # Find all <image> elements with xlink:href attribute
         for image in root.findall(".//{http://www.w3.org/2000/svg}image", namespaces):
             href = image.get("{http://www.w3.org/1999/xlink}href")
             if href is None:
-                pass
+                continue
             elif self.optimize_png and href.startswith("data:image/png;base64,"):
-                image.attrib["{http://www.w3.org/1999/xlink}href"] = convert_func(
-                    href, self.quality
-                )
+                image.attrib["{http://www.w3.org/1999/xlink}href"] = convert_func(href, self.quality)
             elif self.optimize_jpg and href.startswith("data:image/jpeg;base64,"):
-                image.attrib["{http://www.w3.org/1999/xlink}href"] = convert_func(
-                    href, self.quality
-                )
-            elif href and href.startswith("data:image/svg+xml;base64,"):
-                t = ET.ElementTree(
-                    ET.fromstring(decode_base64_data(href).decode("utf-8"))
-                )
+                image.attrib["{http://www.w3.org/1999/xlink}href"] = convert_func(href, self.quality)
+            elif href.startswith("data:image/svg+xml;base64,"):
+                t = ET.ElementTree(ET.fromstring(decode_base64_data(href).decode("utf-8")))
                 self._optimize_bitmap(t)
-                data = ET.tostring(
-                    t.getroot(), encoding="unicode", short_empty_elements=False
-                )
+                data = ET.tostring(t.getroot(), encoding="unicode", short_empty_elements=False)
                 image.attrib["{http://www.w3.org/1999/xlink}href"] = (
                     f"data:image/svg+xml;base64,{base64.b64encode(data.encode('utf-8')).decode('utf-8')}"
                 )
 
     def optimize(self, svgstring):
-        # tree = ET.parse(svg_file)
         tree = ET.ElementTree(ET.fromstring(svgstring))
         root = tree.getroot()
         self._optimize_bitmap(tree)
         self.inline_foreignObject(tree)
 
-        # Write the modified SVG back to a file
+        # Remove namespaces for cleaner output
         strip_namespace(root)
-        img = ET.tostring(root, encoding="unicode", short_empty_elements=False)
-        return re.sub(r'width="([0-9\.]+)pt" height="([0-9\.]+)pt"', "", img)
+        
+        # Remove width and height from the root <svg> element to let it be responsive
+        if "width" in root.attrib:
+            del root.attrib["width"]
+        if "height" in root.attrib:
+            del root.attrib["height"]
+            
+        return ET.tostring(root, encoding="unicode", short_empty_elements=False)
 
 
 def process_file(f, svg_folder_path, optimizer):
     svgstring = f.read_text()
     with (svg_folder_path / f"modified_{f.name}").open("w") as fp:
-        print(optimizer.optimize(svgstring), file=fp)
+        fp.write(optimizer.optimize(svgstring))
 
 
 def init_svg_folder(typst_src, svg_folder, optimizer: SVGOptimizer):
@@ -250,10 +291,6 @@ def init_svg_folder(typst_src, svg_folder, optimizer: SVGOptimizer):
             for f in slide_fns
         ]
         concurrent.futures.wait(futures)
-    # for f in slide_fns:
-    #     svgstring = f.read_text()
-    #     with (svg_folder_path / f"modified_{f.name}").open("w") as fp:
-    #         print(optimizer.optimize(svgstring), file=fp)
 
     query_stdout, query_stderr = query_process.communicate()
 
@@ -297,11 +334,11 @@ class Compiler:
             (
                 "fzstd_js",
                 "fzstd.js",
-            ),  # https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js
+            ),
             (
                 "tar_js",
                 "tarts.min.js",
-            ),  # https://cdn.jsdelivr.net/npm/tarts@1.0.0/dist/tarts.min.js
+            ),
         ]:
             with importlib.resources.path("typstslideviewer", file_name) as p:
                 self._js_libs[lib_name] = p.read_text()
@@ -323,7 +360,6 @@ class Compiler:
         compressed_data = compressor.compress(json.dumps(svgs).encode("utf-8"))
         logger.info(f"Compressed data size: {format_size(len(compressed_data))}")
 
-        # Step 4: Encode the compressed data to Base64
         base64_encoded = base64.b64encode(compressed_data).decode("utf-8")
         logger.info(f"Base64 encoded data size: {format_size(len(base64_encoded))}")
 
@@ -337,7 +373,7 @@ class Compiler:
         )
 
 
-def mian(
+def main(
     typst_src: str,
     output_file=None,
     svg_folder="svgs",
@@ -363,11 +399,8 @@ def mian(
         quality (int, optional): Quality of the optimized images.
         image_format (Literal["webp", "avif"], optional): Format of the optimized images.
         force (bool, optional): Force re-initialization of the SVG folder.
-        note (Literal["", "right"], optional): Note position. If not specified, assume that the slides are not compiled in the speaker mode and the note will be displayed as text in the control window. Only use "right" if the slides are compiled in the speaker mode with `config-common(show-notes-on-second-screen: right)`.
-
-    Raises:
-        Exception: If the template file is not found.
-        Exception: If no SVG files are found in the specified folder.
+        note (Literal["", "right"], optional): Note position.
+        transition (bool, optional): Whether to enable slide transitions.
     """
     svg_folder_path = Path(svg_folder)
     typst_src_path = Path(typst_src)
@@ -388,8 +421,6 @@ def mian(
         )
         or force
     ):
-        logger.info("initializing")
-
         init_svg_folder(
             typst_src_path,
             svg_folder_path,
@@ -414,8 +445,8 @@ def mian(
         svgs[idx - 1] = f.read_text()
 
     with open(output_file, "w") as fp:
-        print(compiler(svgs), file=fp)
+        fp.write(compiler(svgs))
 
 
 def cli():
-    fire.Fire(mian)
+    fire.Fire(main)

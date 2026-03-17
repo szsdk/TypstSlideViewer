@@ -1,11 +1,12 @@
 #import "@preview/fletcher:0.5.3" as fletcher: diagram, node, edge, shapes
-#import "@preview/touying:0.5.5": *
+#import "@preview/touying:0.6.2": *
 #import "@preview/cetz:0.3.1"
 #import themes.metropolis: *
 
 #set cite(style: "chicago-notes")
 // #set text(font: "Arial")
-#set text(font: "Fira Sans")
+// #set text(font: "Fira Sans")
+#set text(font: ("Fira Sans", "Noto Sans CJK SC"))
 
 // #set text(font: "Lete Sans Math")
 #show math.equation: set text(font: "Lete Sans Math", weight: "regular")
@@ -62,19 +63,37 @@
     "</svg>"
   }
 
-  image.decode(html-embed, alt: "!typst-embed-command", width: outer-width, height:outer-height)
+  image(bytes(html-embed), alt: "!typst-embed-command", width: outer-width, height:outer-height)
 }
 
 #title-slide()
 
 == Add foreignObject 
-#xhtml(outer-width: 400pt, outer-height: 400pt, inner-height: 400pt, inner-width: 400pt, ```html
-  <iframe src="https://typst.app" width="200%" height="160%" style="border: none; transform: scale(0.6); transform-origin: 0 0;"></iframe>
-  ```)
 
-== Add video
-#xhtml(outer-width: 400pt, outer-height: 400pt, inner-height: 400pt, inner-width: 400pt, ```html
+#align(center,
+xhtml(outer-width: 600pt, outer-height: 400pt, inner-height: 800pt, inner-width: 1200pt, ```html
+  <iframe src="three.html" width="100%" height="100%" style="border: none;  transform-origin: 0 0;"></iframe>
+```)
+)
+
+== 中文测试嘿嘿 #emoji.ambulance
+#slide(config: config-page(background: image("r.jpg", width:100%)))[
+  #box(fill:white.transparentize(60%))[
+  $
+  and.big_i^infinity bold(x)_i = integral.cont bold(f)(v) dot dif bold(s)
+  $
+]
+  #align(left,
+  xhtml(outer-width: 400pt, outer-height: 300pt, inner-height: 300pt, inner-width: 400pt, ```html
   <video xmlns="http://www.w3.org/1999/xhtml" width="400px" height="400px" controls="" >
-    <source src="./sample-5s.mp4" type="video/mp4" />
+  <source src="./sample-5s.mp4" type="video/mp4" />
   </video>
   ```)
+)
+)
+]
+
+== Image
+#slide(config: config-page(background: image("r.jpg", width:100%)))[
+#image("r.jpg", width: 60%)
+]
