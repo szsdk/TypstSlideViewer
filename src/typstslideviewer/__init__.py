@@ -100,6 +100,27 @@ def strip_namespace(element):
         elem.attrib = new_attrs
 
 
+def parse_svg_number(value):
+    if value is None:
+        return None
+    match = re.match(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))", str(value))
+    if match is None:
+        return None
+    return float(match.group(1))
+
+
+def parse_view_box(value):
+    if value is None:
+        return None
+    parts = re.split(r"[\s,]+", value.strip())
+    if len(parts) != 4:
+        return None
+    try:
+        return tuple(float(part) for part in parts)
+    except ValueError:
+        return None
+
+
 @lru_cache
 def convert_to_webp(img_base64, quality=90):
     data = decode_base64_data(img_base64)
@@ -136,6 +157,7 @@ class SVGOptimizer(BaseModel):
         parent_map = {c: p for p in tree.iter() for c in p}
         root = tree.getroot()
         namespaces = {"xlink": "http://www.w3.org/1999/xlink"}
+        svg_ns = "http://www.w3.org/2000/svg"
 
         for image in root.findall(".//{http://www.w3.org/2000/svg}image", namespaces):
             href = image.get("{http://www.w3.org/1999/xlink}href")
@@ -143,6 +165,7 @@ class SVGOptimizer(BaseModel):
                 decoded_data = decode_base64_data(href)
                 # Parse decoded SVG
                 inner_tree = ET.fromstring(decoded_data.decode("utf-8"))
+                inner_view_box = parse_view_box(inner_tree.get("viewBox"))
 
                 # Find foreignObject in the decoded SVG
                 foreign_object = inner_tree.find(
@@ -176,27 +199,50 @@ class SVGOptimizer(BaseModel):
                                         base64_video = base64.b64encode(video_file.read()).decode("utf-8")
                                         source_element.attrib["src"] = f"data:video/mp4;base64,{base64_video}"
 
-                    # Copy attributes from <image> to <foreignObject> to preserve position and size
-                    foreign_object.attrib.clear()
-                    for attr_name, attr_value in image.attrib.items():
-                        if attr_name != "{http://www.w3.org/1999/xlink}href":
-                            foreign_object.set(attr_name, attr_value)
-                    
-                    # Ensure positioning attributes are explicitly set if they were in a namespace
-                    for attr in ["transform", "x", "y", "width", "height"]:
-                        if attr not in foreign_object.attrib:
-                            val = image.get(attr)
-                            if val:
-                                foreign_object.set(attr, val)
-                            else:
-                                # Check for namespaced versions
-                                for k, v in image.attrib.items():
-                                    if k.endswith("}" + attr):
-                                        foreign_object.set(attr, v)
-
                     parent = parent_map[image]
+                    image_index = list(parent).index(image)
+
+                    image_width = parse_svg_number(image.get("width"))
+                    image_height = parse_svg_number(image.get("height"))
+                    if (
+                        inner_view_box is not None
+                        and image_width
+                        and image_height
+                        and inner_view_box[2]
+                        and inner_view_box[3]
+                    ):
+                        min_x, min_y, view_width, view_height = inner_view_box
+                        scale_x = image_width / view_width
+                        scale_y = image_height / view_height
+                        transforms = []
+
+                        image_transform = image.get("transform")
+                        if image_transform:
+                            transforms.append(image_transform)
+
+                        image_x = parse_svg_number(image.get("x")) or 0
+                        image_y = parse_svg_number(image.get("y")) or 0
+                        if image_x != 0 or image_y != 0:
+                            transforms.append(f"translate({image_x:g} {image_y:g})")
+
+                        transforms.append(f"scale({scale_x:g} {scale_y:g})")
+                        if min_x != 0 or min_y != 0:
+                            transforms.append(f"translate({-min_x:g} {-min_y:g})")
+
+                        wrapper = ET.Element(f"{{{svg_ns}}}g")
+                        wrapper.set("transform", " ".join(transforms))
+                        wrapper.append(foreign_object)
+                        replacement = wrapper
+                    else:
+                        # Fall back to the old behavior when the embedded SVG has no usable viewBox.
+                        foreign_object.attrib.clear()
+                        for attr_name, attr_value in image.attrib.items():
+                            if attr_name != "{http://www.w3.org/1999/xlink}href":
+                                foreign_object.set(attr_name, attr_value)
+                        replacement = foreign_object
+
                     parent.remove(image)
-                    parent.append(foreign_object)
+                    parent.insert(image_index, replacement)
 
     def _optimize_bitmap(self, tree):
         root = tree.getroot()
