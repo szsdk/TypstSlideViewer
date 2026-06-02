@@ -1,20 +1,26 @@
 import base64
 import concurrent.futures
+import hashlib
+import html
 import importlib.resources
 import io
 import json
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional, Union
+from urllib.parse import urlparse
 
 import fire
 import jinja2
 import zstandard as zstd
 from loguru import logger
-from PIL import Image
+from PIL import Image, ImageStat
 from pydantic import BaseModel, ConfigDict
 
 
@@ -33,6 +39,13 @@ class MetaInfo(BaseModel):
     pages: dict[int, Page]
 
 
+class PlaceholderTarget(BaseModel):
+    kind: Literal["src", "path", "srcdoc", "video"]
+    source: str
+    target: str
+    output: Path
+
+
 def format_size(size: Union[int, float]) -> str:
     # Convert bytes to a human-readable format
     for unit in ["B", "KB", "MB", "GB"]:
@@ -40,6 +53,351 @@ def format_size(size: Union[int, float]) -> str:
             return f"{size:.2f} {unit}"
         size /= 1024
     return f"{size:.2f} TB"
+
+
+def placeholder_image_key(kind: str, source: str) -> str:
+    key = f"{kind}-{source}"
+    for char in ['\\', '/', ':', '*', '?', '"', '<', '>', '|', '#', '%', '&', '{', '}', '$', '!', '@', '+', '=', '`', ' ']:
+        key = key.replace(char, "-")
+    return key or hashlib.sha1(f"{kind}:{source}".encode("utf-8")).hexdigest()
+
+
+def find_browser(browser: Optional[str] = None) -> tuple[str, str]:
+    if browser is not None:
+        browser_path = shutil.which(browser) or browser
+        if Path(browser_path).exists():
+            browser_name = Path(browser_path).name
+            return browser_name, browser_path
+        raise FileNotFoundError(f"Browser '{browser}' was not found")
+
+    for browser_name in [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "chrome",
+        "microsoft-edge",
+        "microsoft-edge-stable",
+        "brave-browser",
+        "firefox",
+    ]:
+        browser_path = shutil.which(browser_name)
+        if browser_path is not None:
+            return browser_name, browser_path
+
+    raise FileNotFoundError(
+        "No supported browser found. Install Chromium/Chrome, or pass --browser."
+    )
+
+
+def split_typst_calls(source: str, function_name: str) -> list[str]:
+    calls = []
+    pattern = f"{function_name}("
+    start = 0
+    while True:
+        index = source.find(pattern, start)
+        if index < 0:
+            break
+        pos = index + len(pattern)
+        depth = 1
+        quote = None
+        escaped = False
+        while pos < len(source) and depth > 0:
+            char = source[pos]
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+            elif char in ('"', "'"):
+                quote = char
+            elif char in "([{":
+                depth += 1
+            elif char in ")]}":
+                depth -= 1
+            pos += 1
+        if depth == 0:
+            calls.append(source[index + len(pattern): pos - 1])
+            start = pos
+        else:
+            start = index + len(pattern)
+    return calls
+
+
+def typst_string_arg(call: str, name: str) -> Optional[str]:
+    match = re.search(rf"\b{name}\s*:\s*(\"(?:\\.|[^\"])*\")", call)
+    if match is None:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return match.group(1)[1:-1]
+
+
+def is_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https", "file", "data"}
+
+
+def local_target(value: str, base_dir: Path) -> str:
+    if is_url(value):
+        return value
+    return str((base_dir / value).resolve())
+
+
+def video_wrapper(src: str, base_dir: Path, width: int, height: int) -> str:
+    target = local_target(src, base_dir)
+    if not is_url(target):
+        target = Path(target).as_uri()
+    return f"""<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body {{
+        width: {width}px;
+        height: {height}px;
+        margin: 0;
+        background: #111827;
+        overflow: hidden;
+      }}
+      video {{
+        width: 100vw;
+        height: 100vh;
+        object-fit: contain;
+        background: #111827;
+      }}
+    </style>
+  </head>
+  <body>
+    <video src="{html.escape(target, quote=True)}" controls muted autoplay playsinline></video>
+  </body>
+</html>
+"""
+
+
+def discover_placeholder_targets(
+    typst_src: Union[str, Path],
+    placeholder_folder: Union[str, Path],
+    width: int,
+    height: int,
+) -> list[PlaceholderTarget]:
+    typst_src_path = Path(typst_src)
+    base_dir = typst_src_path.parent
+    placeholder_folder_path = Path(placeholder_folder)
+    source = typst_src_path.read_text()
+    targets: dict[tuple[str, str], PlaceholderTarget] = {}
+
+    def add(kind: Literal["src", "path", "srcdoc", "video"], value: str, target: str):
+        key = (kind, value)
+        if key in targets:
+            return
+        output = placeholder_folder_path / f"{placeholder_image_key(kind, value)}.png"
+        targets[key] = PlaceholderTarget(
+            kind=kind,
+            source=value,
+            target=target,
+            output=output,
+        )
+
+    for call in split_typst_calls(source, "embed-html-file"):
+        path = typst_string_arg(call, "path")
+        if path is not None:
+            add("path", path, local_target(path, base_dir))
+
+    for call in split_typst_calls(source, "embed-html"):
+        src = typst_string_arg(call, "src")
+        srcdoc = typst_string_arg(call, "srcdoc")
+        if src is not None:
+            add("src", src, local_target(src, base_dir))
+        elif srcdoc is not None:
+            add("srcdoc", srcdoc, srcdoc)
+
+    for call in split_typst_calls(source, "embed-video"):
+        src = typst_string_arg(call, "src")
+        if src is not None:
+            add("video", src, video_wrapper(src, base_dir, width, height))
+
+    return list(targets.values())
+
+
+def screenshot_with_browser(
+    browser_name: str,
+    browser_path: str,
+    target: str,
+    output: Union[str, Path],
+    width: int,
+    height: int,
+    virtual_time_budget: int,
+) -> None:
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_file = None
+    browser_target = target
+    if target.lstrip().lower().startswith("<!doctype") or target.lstrip().lower().startswith("<html"):
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".html", encoding="utf-8", delete=False
+        )
+        temp_file.write(target)
+        temp_file.close()
+        browser_target = Path(temp_file.name).as_uri()
+    elif not is_url(target):
+        browser_target = Path(target).resolve().as_uri()
+
+    try:
+        if browser_name.startswith("firefox"):
+            command = [
+                browser_path,
+                "--headless",
+                "--window-size",
+                f"{width},{height}",
+                "--screenshot",
+                str(output_path),
+                browser_target,
+            ]
+        else:
+            command = [
+                browser_path,
+                "--headless=new",
+                "--no-sandbox",
+                "--use-gl=swiftshader",
+                "--enable-unsafe-swiftshader",
+                "--ignore-gpu-blocklist",
+                "--run-all-compositor-stages-before-draw",
+                f"--window-size={width},{height}",
+                f"--virtual-time-budget={virtual_time_budget}",
+                f"--screenshot={output_path}",
+                browser_target,
+            ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Browser screenshot failed for {browser_target}\n"
+                f"stdout:\n{result.stdout}\n"
+                f"stderr:\n{result.stderr}"
+            )
+    finally:
+        if temp_file is not None:
+            Path(temp_file.name).unlink(missing_ok=True)
+
+
+def is_blank_image(path: Union[str, Path], threshold: float = 1.0) -> bool:
+    with Image.open(path) as image:
+        stat = ImageStat.Stat(image.convert("RGB"))
+    return max(stat.stddev) < threshold
+
+
+def screenshot_with_retries(
+    browser_name: str,
+    browser_path: str,
+    target: str,
+    output: Union[str, Path],
+    width: int,
+    height: int,
+    virtual_time_budget: int,
+    retries: int,
+) -> None:
+    for attempt in range(retries + 1):
+        budget = virtual_time_budget * (attempt + 1)
+        screenshot_with_browser(
+            browser_name,
+            browser_path,
+            target,
+            output,
+            width,
+            height,
+            budget,
+        )
+        if not is_blank_image(output):
+            return
+        logger.warning(
+            f"Blank placeholder screenshot for {output}; retrying"
+            if attempt < retries
+            else f"Blank placeholder screenshot for {output}"
+        )
+
+
+def generate_placeholder_images(
+    typst_src: str,
+    placeholder_folder: str = ".typstslideviewer-placeholders",
+    browser: Optional[str] = None,
+    width: int = 1200,
+    height: int = 800,
+    virtual_time_budget: int = 6000,
+    retries: int = 2,
+    force: bool = False,
+):
+    """
+    Generate browser screenshots for html-embed placeholders.
+
+    The default placeholder folder is picked up by html-embed.typ automatically.
+    If you use a custom folder, compile Typst with:
+    --input html-placeholder-dir=<placeholder_folder>
+    """
+    typst_src_path = Path(typst_src)
+    placeholder_folder_path = Path(placeholder_folder)
+    if not placeholder_folder_path.is_absolute():
+        placeholder_folder_path = typst_src_path.parent / placeholder_folder_path
+
+    browser_name, browser_path = find_browser(browser)
+    targets = discover_placeholder_targets(
+        typst_src_path,
+        placeholder_folder_path,
+        width,
+        height,
+    )
+    if not targets:
+        logger.warning("No literal html embed targets found")
+        return []
+
+    logger.info(f"Using browser: {browser_path}")
+    for target in targets:
+        if target.output.exists() and not force:
+            logger.info(f"Skipping existing placeholder: {target.output}")
+            continue
+        logger.info(f"Generating placeholder for {target.kind}: {target.source}")
+        screenshot_with_retries(
+            browser_name,
+            browser_path,
+            target.target,
+            target.output,
+            width,
+            height,
+            virtual_time_budget,
+            retries,
+        )
+
+    manifest = {
+        "placeholder_dir": str(placeholder_folder_path),
+        "typst_input": (
+            None
+            if placeholder_folder == ".typstslideviewer-placeholders"
+            else f"html-placeholder-dir={placeholder_folder}"
+        ),
+        "targets": [
+            {
+                "kind": target.kind,
+                "source": target.source,
+                "output": str(target.output),
+            }
+            for target in targets
+        ],
+    }
+    manifest_path = placeholder_folder_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    logger.info(f"Wrote placeholder manifest: {manifest_path}")
+    if placeholder_folder == ".typstslideviewer-placeholders":
+        logger.info(f"Use with Typst fallback output: typst compile {typst_src_path}")
+    else:
+        logger.info(
+            "Use with Typst fallback output: "
+            f"typst compile --input html-placeholder-dir={placeholder_folder} "
+            f"{typst_src_path}"
+        )
+    return manifest["targets"]
 
 
 def init_pages(raw_pages):
@@ -511,4 +869,8 @@ def main(
 
 
 def cli():
-    fire.Fire(main)
+    if len(sys.argv) > 1 and sys.argv[1] == "placeholders":
+        sys.argv.pop(1)
+        fire.Fire(generate_placeholder_images)
+    else:
+        fire.Fire(main)

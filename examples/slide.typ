@@ -33,7 +33,7 @@
 
 == Add foreignObject 
 #align(center,
-  embed-html(width: 680pt, height: 382.5pt, src: "three.html", placeholder-image: image("three.png"))
+  embed-html(width: 680pt, height: 382.5pt, src: "./three.html")
 )
 
 == 中文测试嘿嘿 #emoji.ambulance

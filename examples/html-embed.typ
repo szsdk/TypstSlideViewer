@@ -16,6 +16,28 @@
   }
 }
 
+#let placeholder-image-key(kind, source) = {
+  let key = kind + "-" + str(source)
+  for char in ("\\", "/", ":", "*", "?", "\"", "<", ">", "|", "#", "%", "&", "{", "}", "$", "!", "@", "+", "=", "`", " ") {
+    key = key.replace(char, "-")
+  }
+  key
+}
+
+#let generated-placeholder-image(kind, source) = {
+  if source == none {
+    none
+  } else {
+    let image = sys.inputs.at("html-placeholder-image-" + kind + ":" + str(source), default: none)
+    if image != none {
+      image
+    } else {
+      let dir = sys.inputs.at("html-placeholder-dir", default: ".typstslideviewer-placeholders")
+      dir + "/" + placeholder-image-key(kind, source) + ".png"
+    }
+  }
+}
+
 #let html-content(content) = {
   let content = if content.func() == raw {
     content.text
@@ -199,6 +221,15 @@
     direct-html(width: width, height: height, content)
   } else {
     let fallback-link = if fallback-link != none { fallback-link } else { src }
+    let placeholder-image = if placeholder-image != none {
+      placeholder-image
+    } else if src != none {
+      generated-placeholder-image("src", src)
+    } else if srcdoc != none {
+      generated-placeholder-image("srcdoc", srcdoc)
+    } else {
+      none
+    }
     let fallback-source = if src != none {
       "src: " + str(src)
     } else if srcdoc != none {
@@ -231,6 +262,11 @@
 ) = {
   assert(path != none, message: "embed-html-file requires path")
   let fallback-link = if fallback-link != none { fallback-link } else { path }
+  let placeholder-image = if placeholder-image != none {
+    placeholder-image
+  } else {
+    generated-placeholder-image("path", path)
+  }
   iframe-html(
     width: width,
     height: height,
@@ -259,6 +295,11 @@
   assert(src != none, message: "embed-video requires src")
   if html-embed-mode != "iframe" {
     let fallback-link = if fallback-link != none { fallback-link } else { src }
+    let placeholder-image = if placeholder-image != none {
+      placeholder-image
+    } else {
+      generated-placeholder-image("video", src)
+    }
     html-placeholder(
       width: width,
       height: height,
