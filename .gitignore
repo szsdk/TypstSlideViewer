@@ -1,3 +1,7 @@
+*.png
+*.jpg
+*.svg
+*.webp
 uv.lock
 # Python-generated files
 __pycache__/
