@@ -31,10 +31,9 @@
   embed-html-file(width: 680pt, height: 382.5pt, path: "three.html")
 )
 
-
 == Add foreignObject 
 #align(center,
-  embed-html(width: 680pt, height: 382.5pt, src: "three.html")
+  embed-html(width: 680pt, height: 382.5pt, src: "three.html", placeholder-image: image("three.png"))
 )
 
 == 中文测试嘿嘿 #emoji.ambulance

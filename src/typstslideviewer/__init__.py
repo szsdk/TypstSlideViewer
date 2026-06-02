@@ -308,14 +308,30 @@ def init_svg_folder(typst_src, svg_folder, optimizer: SVGOptimizer):
 
     logger.info(f"Compiling Typst source file: {typst_src_path}")
     compile_process = subprocess.Popen(
-        ["typst", "compile", typst_src_path, f"{svg_folder_path}/slide_{{0p}}.svg"],
+        [
+            "typst",
+            "compile",
+            "--input",
+            "html-embed-mode=iframe",
+            typst_src_path,
+            f"{svg_folder_path}/slide_{{0p}}.svg",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
     logger.info(f"Querying Typst source file: {typst_src_path}")
     query_process = subprocess.Popen(
-        ["typst", "query", typst_src_path, "--field", "value", "<pdfpc-file>"],
+        [
+            "typst",
+            "query",
+            "--input",
+            "html-embed-mode=iframe",
+            typst_src_path,
+            "--field",
+            "value",
+            "<pdfpc-file>",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
