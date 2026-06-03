@@ -32,8 +32,12 @@
 )
 
 == Add foreignObject 
-#align(center,
-  embed-html(width: 680pt, height: 382.5pt, src: "./three.html")
+#slide(
+  [
+    #align(center,embed-html(width: 380pt, height: 182.5pt, src: "./three.html"))
+    #pause
+    hello
+  ]
 )
 
 == 中文测试嘿嘿 #emoji.ambulance
