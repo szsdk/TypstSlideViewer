@@ -268,13 +268,17 @@ async function fetchSVG(index, side=null) {
     if (svgElement) {
       const viewBox = svgElement.getAttribute('viewBox');
       if (viewBox) {
-        const viewBoxValues = viewBox.split(' ').map(Number);
+        const viewBoxValues = viewBox.trim().split(/[\s,]+/).map(Number);
         if (viewBoxValues.length === 4) {
           const [minX, minY, width, height] = viewBoxValues;
           if (side === 'right') {
             const newMinX = minX + width / 2;
             const newWidth = width / 2;
             svgElement.setAttribute('viewBox', `${newMinX} ${minY} ${newWidth} ${height}`);
+            svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+            svgElement.setAttribute('overflow', 'hidden');
+            svgElement.style.aspectRatio = `${newWidth} / ${height}`;
+            svgElement.style.overflow = 'hidden';
           } else if (side === 'left') {
             const newWidth = width / 2.001;
             svgElement.setAttribute('viewBox', `${minX} ${minY} ${newWidth} ${height}`);
@@ -472,23 +476,21 @@ function drawControlWindow() {
     if (currentIndex in pages) {
       // currentIndex exists in pages
       controlWindow.document.body.innerHTML = `
-<div style="display: flex; flex-direction: row; gap: 10px; font-family: Arial, sans-serif; padding: 20px;">
-  <!-- Left Column: Current and Next Slides -->
-  <div style="flex: 1; display: flex; flex-direction: column; gap: 10px;">
-    <!-- Current Slide -->
-    <div id="current-svg" tabindex="0" style="flex: 1; display: flex; justify-content: center; align-items: center; border: 1px solid white;">
-      <p>Loading current slide...</p>
-    </div>
-    <!-- Next Slide -->
-    <div id="next-svg" style="flex: 1; display: flex; justify-content: center; align-items: center; border: 1px solid white;">
-      <p>Loading next slide...</p>
-    </div>
+<div style="height: calc(100vh - 16px); display: flex; flex-direction: column; gap: 8px; font-family: Arial, sans-serif; padding: 8px;">
+  <!-- Slide Notes -->
+  <div style="flex: 1; min-height: 0; display: flex; overflow: hidden; word-wrap: break-word; overflow-wrap: break-word; padding: 4px; border: 1px solid white;">
+    <div id="note" class="note" style="font-size: 30pt; white-space: pre-wrap;">${pages[currentIndex].note}</div>
   </div>
 
-  <!-- Right Column: Slide Notes -->
-  <div style="flex: 2; word-wrap: break-word; overflow-wrap: break-word; padding: 10px; border: 1px solid white;">
-    <div style="font-size: 18pt; margin-bottom: 10px; font-weight: bold;">${pages[currentIndex].label}</div>
-    <div id="note", class="note" style="font-size: 20pt; white-space: pre-wrap;">${pages[currentIndex].note}</div>
+  <!-- Page Counter and Slide Previews -->
+  <div style="flex: 0 0 18vh; min-height: 0; display: flex; flex-direction: row; gap: 8px;">
+    <div style="flex: 0 0 auto; display: flex; align-items: center; padding: 0 8px; font-size: 18pt; font-weight: bold;">${pages[currentIndex].label}</div>
+    <div id="current-svg" tabindex="0" style="flex: 1; min-width: 0; display: flex; justify-content: center; align-items: center; overflow: hidden; border: 1px solid white;">
+      <p>Loading current slide...</p>
+    </div>
+    <div id="next-svg" style="flex: 1; min-width: 0; display: flex; justify-content: center; align-items: center; overflow: hidden; border: 1px solid white;">
+      <p>Loading next slide...</p>
+    </div>
   </div>
 </div>
 `;
@@ -524,17 +526,47 @@ function initControlWindow(pages, currentIndex) {
 
   // Define the CSS for the note
   const css = `
+body {
+margin: 0;
+}
 .note {
+box-sizing: border-box;
+flex: 1;
+min-width: 0;
+min-height: 0;
+display: flex;
+justify-content: center;
+align-items: center;
+overflow: hidden;
+clip-path: inset(0);
+contain: paint;
 font-family: Arial, sans-serif;
 font-size: 26px;
 color: #333;
 line-height: 1.5;
-margin: 20px;
-padding: 10px;
+margin: 0;
+padding: 6px;
 border: 1px solid #ccc;
 border-radius: 5px;
 background-color: #f9f9f9;
 white-space: pre;
+}
+.note svg {
+display: block;
+max-width: 100%;
+max-height: 100%;
+width: auto;
+height: 100%;
+flex: 0 1 auto;
+overflow: hidden;
+}
+#current-svg svg,
+#next-svg svg {
+display: block;
+max-width: 100%;
+max-height: 100%;
+width: auto;
+height: auto;
 }
 `;
 
