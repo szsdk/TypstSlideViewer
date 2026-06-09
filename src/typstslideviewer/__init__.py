@@ -57,7 +57,29 @@ def format_size(size: Union[int, float]) -> str:
 
 def placeholder_image_key(kind: str, source: str) -> str:
     key = f"{kind}-{source}"
-    for char in ['\\', '/', ':', '*', '?', '"', '<', '>', '|', '#', '%', '&', '{', '}', '$', '!', '@', '+', '=', '`', ' ']:
+    for char in [
+        "\\",
+        "/",
+        ":",
+        "*",
+        "?",
+        '"',
+        "<",
+        ">",
+        "|",
+        "#",
+        "%",
+        "&",
+        "{",
+        "}",
+        "$",
+        "!",
+        "@",
+        "+",
+        "=",
+        "`",
+        " ",
+    ]:
         key = key.replace(char, "-")
     return key or hashlib.sha1(f"{kind}:{source}".encode("utf-8")).hexdigest()
 
@@ -119,7 +141,7 @@ def split_typst_calls(source: str, function_name: str) -> list[str]:
                 depth -= 1
             pos += 1
         if depth == 0:
-            calls.append(source[index + len(pattern): pos - 1])
+            calls.append(source[index + len(pattern) : pos - 1])
             start = pos
         else:
             start = index + len(pattern)
@@ -237,7 +259,9 @@ def screenshot_with_browser(
 
     temp_file = None
     browser_target = target
-    if target.lstrip().lower().startswith("<!doctype") or target.lstrip().lower().startswith("<html"):
+    if target.lstrip().lower().startswith(
+        "<!doctype"
+    ) or target.lstrip().lower().startswith("<html"):
         temp_file = tempfile.NamedTemporaryFile(
             mode="w", suffix=".html", encoding="utf-8", delete=False
         )
@@ -400,6 +424,32 @@ def generate_placeholder_images(
     return manifest["targets"]
 
 
+def write_html_embed(
+    output: str = "html-embed.typ",
+    force: bool = False,
+) -> str:
+    """
+    Write the bundled html-embed.typ helper to disk.
+
+    Args:
+        output (str, optional): Destination file or directory.
+        force (bool, optional): Replace an existing file.
+    """
+    output_path = Path(output)
+    if output_path.is_dir():
+        output_path /= "html-embed.typ"
+    if output_path.exists() and not force:
+        raise FileExistsError(
+            f"Refusing to overwrite '{output_path}'. Pass --force=True to replace it."
+        )
+
+    resource = importlib.resources.files("typstslideviewer").joinpath("html-embed.typ")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(resource.read_text(encoding="utf-8"), encoding="utf-8")
+    logger.info(f"Wrote HTML embed helper: {output_path}")
+    return str(output_path)
+
+
 def init_pages(raw_pages):
     pages = {i["idx"]: Page.model_validate(i) for i in raw_pages}
     for k in pages.keys():
@@ -535,27 +585,33 @@ class SVGOptimizer(BaseModel):
                 if foreign_object is not None:
                     # Specific handling for video elements
                     children = list(foreign_object)
-                    if (
-                        len(children) == 1
-                        and (children[0].tag == "{http://www.w3.org/1999/xhtml}video" or children[0].tag.endswith("video"))
+                    if len(children) == 1 and (
+                        children[0].tag == "{http://www.w3.org/1999/xhtml}video"
+                        or children[0].tag.endswith("video")
                     ):
                         video_element = children[0]
                         video_element.set("width", "100%")
                         video_element.set("height", "100%")
                         video_element.set("style", "width: 100%; height: 100%;")
-                        
-                        source_element = video_element.find("{http://www.w3.org/1999/xhtml}source")
+
+                        source_element = video_element.find(
+                            "{http://www.w3.org/1999/xhtml}source"
+                        )
                         if source_element is None:
-                             source_element = video_element.find("source")
-                             
+                            source_element = video_element.find("source")
+
                         if source_element is not None:
                             src = source_element.attrib.get("src")
                             if src and src.endswith(".mp4"):
                                 video_path = Path(src)
                                 if video_path.exists():
                                     with open(video_path, "rb") as video_file:
-                                        base64_video = base64.b64encode(video_file.read()).decode("utf-8")
-                                        source_element.attrib["src"] = f"data:video/mp4;base64,{base64_video}"
+                                        base64_video = base64.b64encode(
+                                            video_file.read()
+                                        ).decode("utf-8")
+                                        source_element.attrib["src"] = (
+                                            f"data:video/mp4;base64,{base64_video}"
+                                        )
 
                     parent = parent_map[image]
                     image_index = list(parent).index(image)
@@ -612,20 +668,28 @@ class SVGOptimizer(BaseModel):
             convert_func = convert_to_avif
         else:
             raise ValueError(f"Invalid output format: {self.output_format}")
-            
+
         # Find all <image> elements with xlink:href attribute
         for image in root.findall(".//{http://www.w3.org/2000/svg}image", namespaces):
             href = image.get("{http://www.w3.org/1999/xlink}href")
             if href is None:
                 continue
             elif self.optimize_png and href.startswith("data:image/png;base64,"):
-                image.attrib["{http://www.w3.org/1999/xlink}href"] = convert_func(href, self.quality)
+                image.attrib["{http://www.w3.org/1999/xlink}href"] = convert_func(
+                    href, self.quality
+                )
             elif self.optimize_jpg and href.startswith("data:image/jpeg;base64,"):
-                image.attrib["{http://www.w3.org/1999/xlink}href"] = convert_func(href, self.quality)
+                image.attrib["{http://www.w3.org/1999/xlink}href"] = convert_func(
+                    href, self.quality
+                )
             elif href.startswith("data:image/svg+xml;base64,"):
-                t = ET.ElementTree(ET.fromstring(decode_base64_data(href).decode("utf-8")))
+                t = ET.ElementTree(
+                    ET.fromstring(decode_base64_data(href).decode("utf-8"))
+                )
                 self._optimize_bitmap(t)
-                data = ET.tostring(t.getroot(), encoding="unicode", short_empty_elements=False)
+                data = ET.tostring(
+                    t.getroot(), encoding="unicode", short_empty_elements=False
+                )
                 image.attrib["{http://www.w3.org/1999/xlink}href"] = (
                     f"data:image/svg+xml;base64,{base64.b64encode(data.encode('utf-8')).decode('utf-8')}"
                 )
@@ -638,13 +702,13 @@ class SVGOptimizer(BaseModel):
 
         # Remove namespaces for cleaner output
         strip_namespace(root)
-        
+
         # Remove width and height from the root <svg> element to let it be responsive
         if "width" in root.attrib:
             del root.attrib["width"]
         if "height" in root.attrib:
             del root.attrib["height"]
-            
+
         return ET.tostring(root, encoding="unicode", short_empty_elements=False)
 
 
@@ -695,10 +759,10 @@ def init_svg_folder(typst_src, svg_folder, optimizer: SVGOptimizer):
         text=True,
     )
 
-    compile_process.communicate()
+    _, stderr = compile_process.communicate()
     if compile_process.returncode != 0:
         logger.error("Compilation failed")
-        raise Exception(compile_process.stderr.read())
+        raise Exception(stderr)
 
     logger.info("Compilation successful, processing SVG files")
     ET.register_namespace("", "http://www.w3.org/2000/svg")
@@ -869,8 +933,12 @@ def main(
 
 
 def cli():
-    if len(sys.argv) > 1 and sys.argv[1] == "placeholders":
-        sys.argv.pop(1)
-        fire.Fire(generate_placeholder_images)
-    else:
-        fire.Fire(main)
+    subcommands = {
+        "html-embed": write_html_embed,
+        "placeholders": generate_placeholder_images,
+    }
+    if len(sys.argv) > 1 and sys.argv[1] in subcommands:
+        command = subcommands[sys.argv.pop(1)]
+        fire.Fire(command)
+        return
+    fire.Fire(main)
