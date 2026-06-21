@@ -116,6 +116,23 @@
       pointer-events: none;
     }
 
+    #svg-container #annotation-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+    }
+
+    #svg-container #annotation-layer.drawing {
+      pointer-events: auto;
+    }
+
+    #svg-container #annotation-canvas {
+      position: absolute;
+      overflow: visible;
+      pointer-events: inherit;
+    }
+
     #svg-container .html-overlay iframe {
       display: block;
       width: 100%;
@@ -310,6 +327,54 @@ function loadAnnotations(label) {
   }
 }
 
+function getAnnotationCanvas() {
+  return document.getElementById("annotation-canvas");
+}
+
+function setAnnotationDrawingEnabled(enabled) {
+  const layer = document.getElementById("annotation-layer");
+  if (layer) {
+    layer.classList.toggle("drawing", enabled);
+  }
+}
+
+function syncAnnotationLayer(slide = null) {
+  const container = document.getElementById("svg-container");
+  const canvas = getAnnotationCanvas();
+  const activeSlide = slide || container.querySelector(".slide.active");
+  const slideSvg = activeSlide ? activeSlide.querySelector("svg") : null;
+
+  if (!canvas || !slideSvg) {
+    return;
+  }
+
+  const viewBox = slideSvg.getAttribute("viewBox");
+  if (viewBox) {
+    canvas.setAttribute("viewBox", viewBox);
+  }
+  canvas.setAttribute(
+    "preserveAspectRatio",
+    slideSvg.getAttribute("preserveAspectRatio") || "xMidYMid meet"
+  );
+
+  const containerRect = container.getBoundingClientRect();
+  const svgRect = slideSvg.getBoundingClientRect();
+  canvas.style.left = `${svgRect.left - containerRect.left}px`;
+  canvas.style.top = `${svgRect.top - containerRect.top}px`;
+  canvas.style.width = `${svgRect.width}px`;
+  canvas.style.height = `${svgRect.height}px`;
+}
+
+function renderAnnotations(index, slide = null) {
+  const canvas = getAnnotationCanvas();
+  if (!canvas) {
+    return;
+  }
+  canvas.innerHTML = loadAnnotations(pages[index].label);
+  syncAnnotationLayer(slide);
+  requestAnimationFrame(() => syncAnnotationLayer(slide));
+}
+
 function layoutHtmlOverlays(root = document) {
   const container = document.getElementById("svg-container");
   const containerRect = container.getBoundingClientRect();
@@ -419,17 +484,9 @@ async function loadSVG(index, animationType = 'no-animation') {
     newSlide.classList.add("slide", "incoming", animationType);
     newSlide.innerHTML = svgContent;
 
-    const svg = newSlide.querySelector('svg');
-    const newGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
-
-    // Add any attributes to the group if needed
-    newGroup.setAttribute("id", "annotation-canvas");
-    newGroup.innerHTML = loadAnnotations(pages[index].label);
-    svg.appendChild(newGroup);
-
-
     container.appendChild(newSlide);
     promoteHtmlOverlays(newSlide);
+    renderAnnotations(index, newSlide);
 
     // Get the current active slide
     const currentSlide = container.querySelector(".slide.active");
@@ -448,6 +505,7 @@ async function loadSVG(index, animationType = 'no-animation') {
     newSlide.classList.add("active");
     newSlide.classList.remove("incoming");
     requestAnimationFrame(() => layoutHtmlOverlays());
+    requestAnimationFrame(() => syncAnnotationLayer(newSlide));
 
 
     // Remove the old slide after the animation completes
@@ -456,6 +514,7 @@ async function loadSVG(index, animationType = 'no-animation') {
         container.removeChild(currentSlide);
       }
       layoutHtmlOverlays();
+      syncAnnotationLayer(newSlide);
       // Load annotations for the new slide
     }, 500); // Match the duration of the CSS transition
 
@@ -716,7 +775,7 @@ function findNearestPath(annotationCanvas, x, y, threshold) {
 }
 
 function to_svg_coor(event){
-  const svgCanvas = document.getElementById("svg-container").getElementsByTagName("svg")[0];
+  const svgCanvas = getAnnotationCanvas() || document.getElementById("svg-container").getElementsByTagName("svg")[0];
   var pt = svgCanvas.createSVGPoint();
   pt.x = event.clientX;
   pt.y = event.clientY;
@@ -752,10 +811,12 @@ document.addEventListener("DOMContentLoaded", () => {
       tool = ""
       annotationEraser.setAttribute("stroke", "white");
       svgContainer.style.pointerEvents = "auto";
+      setAnnotationDrawingEnabled(false);
       annotationPen.setAttribute("stroke", "white");
       annotationPen.setAttribute("stroke-width", 2);
     } else {
       svgContainer.style.pointerEvents = "auto";
+      setAnnotationDrawingEnabled(true);
       console.log(penColor);
       annotationPen.setAttribute("stroke", penColor);
       annotationPen.setAttribute("stroke-width", penLineWidth / 2.0);
@@ -774,11 +835,13 @@ document.addEventListener("DOMContentLoaded", () => {
       annotationPen.setAttribute("stroke", "white");
       annotationEraser.setAttribute("stroke", "white");
       svgContainer.style.pointerEvents = "auto";
+      setAnnotationDrawingEnabled(false);
     } else {
       tool = "eraser";
       annotationPen.setAttribute("stroke", "white");
       annotationEraser.setAttribute("stroke", "#7777aa");
       svgContainer.style.pointerEvents = "auto";
+      setAnnotationDrawingEnabled(true);
     }
   });
 
@@ -813,6 +876,7 @@ document.addEventListener("DOMContentLoaded", () => {
     annotationPen.setAttribute("stroke", "white");
     annotationEraser.setAttribute("stroke", "white");
     svgContainer.style.pointerEvents = "auto";
+    setAnnotationDrawingEnabled(false);
   });
 
   document.getElementById("annotationPen").addEventListener("dblclick", () => {
@@ -834,6 +898,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   window.addEventListener("resize", () => {
     requestAnimationFrame(() => layoutHtmlOverlays());
+    requestAnimationFrame(() => syncAnnotationLayer());
   });
 
   // Keyboard event listeners for navigating slides
@@ -947,9 +1012,10 @@ document.addEventListener('mousemove', () => {
     </script>
   </head>
   <body>
-    <div id="svg-container"></div>
-    <div id="annotation-layer" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;">
-      <!-- <svg id="annotation-canvas" width="100%" height="100%"></svg> -->
+    <div id="svg-container">
+      <div id="annotation-layer">
+        <svg id="annotation-canvas"></svg>
+      </div>
     </div>
     <div id="thumbnail-selector"></div>
     <div class="help" id="help">
