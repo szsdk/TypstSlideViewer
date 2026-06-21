@@ -270,16 +270,27 @@ function get_svg_cache(){
   // const cache = JSON.parse(text);
   return JSON.parse(text);
 }
-const cache = get_svg_cache();
+const svgPackage = get_svg_cache();
+const cache = svgPackage.slides || svgPackage;
+const svgAssets = svgPackage.assets || {};
+
+function inflateSVG(svgContent) {
+  if (!svgContent) {return svgContent;}
+  for (const [token, asset] of Object.entries(svgAssets)) {
+    svgContent = svgContent.split(token).join(asset);
+  }
+  return svgContent;
+}
 
 const note = {{ note | tojson }};
 const htmlOverlayCache = new Map();
 
 async function fetchSVG(index, side=null) {
-  if ((note === "") || (side === null)) {return cache[index];}
+  const svgContent = inflateSVG(cache[index]);
+  if ((note === "") || (side === null)) {return svgContent;}
   if (cache[index]) {
     const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = cache[index];
+    tempDiv.innerHTML = svgContent;
 
     const svgElement = tempDiv.querySelector('svg');
     if (svgElement) {
@@ -850,7 +861,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let parser = new DOMParser();
     let serializer = new XMLSerializer();
     const tar = Tar(Object.keys(cache).map(key => {
-      let doc = parser.parseFromString(cache[key], "image/svg+xml");
+      let doc = parser.parseFromString(inflateSVG(cache[key]), "image/svg+xml");
       let svg = doc.querySelector("svg");
       svg.innerHTML += loadAnnotations(pages[key].label);
       return {

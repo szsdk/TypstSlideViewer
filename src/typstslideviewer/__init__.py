@@ -24,6 +24,9 @@ from PIL import Image, ImageStat
 from pydantic import BaseModel, ConfigDict
 
 
+DATA_URI_PATTERN = re.compile(r"data:[^;,]+;base64,[A-Za-z0-9+/=]+")
+
+
 class Page(BaseModel):
     model_config = ConfigDict(extra="ignore")
     idx: int
@@ -770,6 +773,45 @@ class Compiler:
         self.meta_info = meta_info
         self.transition = transition
 
+    def pack_svgs(self, svgs: dict[int, str]):
+        data_uri_counts: dict[str, int] = {}
+        for svg in svgs.values():
+            for match in DATA_URI_PATTERN.finditer(svg):
+                data_uri = match.group(0)
+                data_uri_counts[data_uri] = data_uri_counts.get(data_uri, 0) + 1
+
+        assets: dict[str, str] = {}
+        asset_tokens: dict[str, str] = {}
+        for data_uri, count in sorted(
+            data_uri_counts.items(), key=lambda item: len(item[0]), reverse=True
+        ):
+            if count <= 1 or len(data_uri) < 1024:
+                continue
+            token = f"@@TSV_ASSET_{len(assets)}@@"
+            assets[token] = data_uri
+            asset_tokens[data_uri] = token
+
+        if not assets:
+            return {"slides": svgs, "assets": {}}
+
+        packed_svgs = {}
+        for idx, svg in svgs.items():
+            for data_uri, token in asset_tokens.items():
+                svg = svg.replace(data_uri, token)
+            packed_svgs[idx] = svg
+
+        original_size = sum(len(svg.encode("utf-8")) for svg in svgs.values())
+        packed_size = (
+            sum(len(svg.encode("utf-8")) for svg in packed_svgs.values())
+            + sum(len(asset.encode("utf-8")) for asset in assets.values())
+        )
+        logger.info(
+            "Deduplicated repeated data URIs: "
+            f"{len(assets)} assets, JSON payload text {format_size(original_size)} "
+            f"-> {format_size(packed_size)}"
+        )
+        return {"slides": packed_svgs, "assets": assets}
+
     def __call__(self, svgs: dict[int, str]):
         compressor = zstd.ZstdCompressor(
             compression_params=zstd.ZstdCompressionParameters.from_level(
@@ -777,7 +819,10 @@ class Compiler:
             )
         )
         logger.info("Start compressing JSON data")
-        compressed_data = compressor.compress(json.dumps(svgs).encode("utf-8"))
+        svg_package = self.pack_svgs(svgs)
+        compressed_data = compressor.compress(
+            json.dumps(svg_package, separators=(",", ":")).encode("utf-8")
+        )
         logger.info(f"Compressed data size: {format_size(len(compressed_data))}")
 
         base64_encoded = base64.b64encode(compressed_data).decode("utf-8")
