@@ -47,3 +47,18 @@ gen-slide slides.typ
 
 Then an HTML file, `slides.html`, will be generated in the same directory.
 Open it with a browser to view the slides.
+
+### HTML embeds
+
+Write the bundled Typst helper into the current directory:
+
+```bash
+gen-slide html-embed
+```
+
+Choose another destination, or replace an existing copy:
+
+```bash
+gen-slide html-embed --output=path/to/html-embed.typ
+gen-slide html-embed --force=True
+```
