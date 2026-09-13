@@ -1,0 +1,19 @@
+{
+  "name": "typstslideviewer",
+  "version": "0.1.0",
+  "description": "Generate self-contained HTML slide viewers from Typst presentations",
+  "type": "module",
+  "bin": {
+    "gen-slide": "./bin/gen-slide.js"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "fzstd": "0.1.1",
+    "tarts": "2.0.1"
+  }
+}

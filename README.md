@@ -3,12 +3,23 @@
 ## Installation
 
 ```bash
-pip install .
+npm install
 ```
+
+This project requires Node.js 22.15 or newer and the `typst` executable on your
+`PATH`. Install the command globally if you want to use it outside this checkout:
+
+```bash
+npm link
+```
+
+The browser-side Zstandard and TAR libraries are normal npm dependencies; the
+generator embeds their browser bundles into each output HTML file.
 
 ## Usage
 
-After the installation, the `gen-slide` command will be available in the terminal.
+After installation, the `gen-slide` command is available in the terminal (or use
+`node bin/gen-slide.js` directly from this checkout).
 
 ```text
 SYNOPSIS
@@ -16,24 +27,16 @@ SYNOPSIS
 
 POSITIONAL ARGUMENTS
     TYPST_SRC
-        Type: str
         Path to the Typst source file.
 
 FLAGS
     -o, --output_file=OUTPUT_FILE
-        Type: Optional[]
-        Default: None
         Path to the output HTML file.
     -s, --svg_folder=SVG_FOLDER
-        Default: 'svgs'
         Folder containing SVG files.
     -t, --template_file=TEMPLATE_FILE
-        Type: Optional[]
-        Default: None
         Path to the template file.
     -n, --note=NOTE
-        Type: Literal
-        Default: ''
         Note position. If not specified, assumpe that the slides are not compiled in the speaker mode and the note will be displayed as text in the control window. Only use "right" if the slides are compiled in the speaker mode with `config-common(show-notes-on-second-screen: right)`.
 ```
 
@@ -64,6 +67,16 @@ gen-slide html-embed
 Choose another destination, or replace an existing copy:
 
 ```bash
-gen-slide html-embed --output=path/to/html-embed.typ
-gen-slide html-embed --force=True
+gen-slide html-embed --output path/to/html-embed.typ
+gen-slide html-embed --force
+```
+
+### HTML placeholders
+
+Generate fallback screenshots for literal `html-embed` targets with the bundled
+browser-based command. Chromium, Chrome, Edge, Brave, or Firefox must be
+available on your `PATH`.
+
+```bash
+gen-slide placeholders slides.typ
 ```
