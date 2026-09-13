@@ -19,12 +19,25 @@ test("generator emits a viewer from existing SVG files", async () => {
   await writeFile(source, "= A slide");
   await mkdir(svgs);
   await writeFile(join(svgs, "modified_slide_1.svg"), '<svg width="100" height="100"><text>Hello</text></svg>');
-  await writeFile(join(svgs, "meta.json"), JSON.stringify({ pages: [{ idx: 0, label: 1, forcedOverlay: false, hidden: false }] }));
-  await main([source, "--svg-folder", svgs, "--output-file", output]);
+  await writeFile(join(svgs, "meta.json"), JSON.stringify({ pages: [{ idx: 0, label: "1", forcedOverlay: false, hidden: false }] }));
+  await main([source, "--svg-folder", svgs, "--output-file", output, "--thumbnails", "false"]);
   const viewer = await readFile(output, "utf8");
+  assert.match(viewer, /"label":1/);
+  assert.match(viewer, /canvas\.toDataURL\("image\/webp", 0\.8\)/);
+  assert.match(viewer, /xmlns:xlink="http:\/\/www\.w3\.org\/1999\/xlink"/);
+  assert.match(viewer, /snapshotInteractiveRegions\(svgContent, canvas, context\)/);
+  assert.match(viewer, /preserveDrawingBuffer: true/);
+  assert.match(viewer, /drawIframeHtmlOverlay\(iframe, context, destination\)/);
+  assert.match(viewer, /Math\.min\(4, jobs\.length\)/);
+  assert.match(viewer, /requestIdleCallback\(resolve, \{ timeout: 200 \}\)/);
+  assert.match(viewer, /setTimeout\(preload, 0\)/);
+  assert.match(viewer, /const thumbnailCache = svgPackage\.thumbnails \|\| \{\}/);
+  assert.match(viewer, /ensureThumbnails\(\)\.then\(highlightCurrentThumbnail\)/);
+  assert.doesNotMatch(viewer, /\n\s*loadThumbnails\(\);\n/);
   const encoded = viewer.match(/const base64String = "([^"]+)"/)[1];
   const payload = JSON.parse(zstdDecompressSync(Buffer.from(encoded, "base64")).toString("utf8"));
   assert.match(payload.slides[0], /Hello/);
+  assert.deepEqual(payload.thumbnails, {});
 });
 
 test("optimizer makes nested SVG video embeds playable", async () => {
