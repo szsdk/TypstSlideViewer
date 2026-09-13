@@ -48,6 +48,11 @@ gen-slide slides.typ
 Then an HTML file, `slides.html`, will be generated in the same directory.
 Open it with a browser to view the slides.
 
+Press `w` (or use the control-window toolbar button) to open the presenter controls.
+The control window can record microphone audio, play the completed recording, and
+download it in the audio format supported by your browser. Your browser will ask
+for microphone permission when recording starts.
+
 ### HTML embeds
 
 Write the bundled Typst helper into the current directory:

@@ -252,6 +252,179 @@ let penColor = '#ff0000'; // Default color
 let penLineWidth = 2;
 let noAnimation = {{ no_animation | lower }};
 
+let voiceRecorder = null;
+let voiceStream = null;
+let voiceChunks = [];
+let voiceRecordingBlob = null;
+let voiceRecordingUrl = null;
+let voiceRecordingStartedAt = null;
+let voiceRecordingDuration = 0;
+let voiceRecordingTimer = null;
+let voiceRecordingStatus = "Ready to record";
+let voiceRecordingBusy = false;
+
+function formatRecordingDuration(milliseconds) {
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function currentRecordingDuration() {
+  if (voiceRecorder && voiceRecorder.state === "recording" && voiceRecordingStartedAt !== null) {
+    return Date.now() - voiceRecordingStartedAt;
+  }
+  return voiceRecordingDuration;
+}
+
+function recordingFileExtension(mimeType) {
+  if (mimeType.includes("ogg")) return "ogg";
+  if (mimeType.includes("mp4")) return "m4a";
+  return "webm";
+}
+
+function updateVoiceRecordingControls() {
+  if (!controlWindow || controlWindow.closed) return;
+
+  const recording = voiceRecorder && voiceRecorder.state === "recording";
+  const recordButton = controlWindow.document.getElementById("voice-record");
+  const stopButton = controlWindow.document.getElementById("voice-stop");
+  const status = controlWindow.document.getElementById("voice-status");
+  const duration = controlWindow.document.getElementById("voice-duration");
+  const audio = controlWindow.document.getElementById("voice-playback");
+  const downloadButton = controlWindow.document.getElementById("voice-download");
+
+  if (recordButton) recordButton.disabled = voiceRecordingBusy;
+  if (stopButton) stopButton.disabled = !recording;
+  if (status) {
+    status.textContent = voiceRecordingStatus;
+    status.classList.toggle("recording", Boolean(recording));
+  }
+  if (duration) duration.textContent = formatRecordingDuration(currentRecordingDuration());
+  if (audio) {
+    if (voiceRecordingUrl && !voiceRecordingBusy) {
+      if (audio.src !== voiceRecordingUrl) audio.src = voiceRecordingUrl;
+      audio.hidden = false;
+    } else {
+      audio.hidden = true;
+      audio.removeAttribute("src");
+    }
+  }
+  if (downloadButton) downloadButton.disabled = voiceRecordingBusy || !voiceRecordingBlob;
+}
+
+function releaseVoiceStream() {
+  if (voiceStream) {
+    voiceStream.getTracks().forEach((track) => track.stop());
+    voiceStream = null;
+  }
+}
+
+async function startVoiceRecording() {
+  if (voiceRecordingBusy) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+    voiceRecordingStatus = "Audio recording is not supported by this browser";
+    updateVoiceRecordingControls();
+    return;
+  }
+
+  try {
+    voiceRecordingBusy = true;
+    voiceRecordingStatus = "Requesting microphone access…";
+    updateVoiceRecordingControls();
+    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    const preferredTypes = [
+      "audio/webm;codecs=opus",
+      "audio/ogg;codecs=opus",
+      "audio/mp4",
+    ];
+    const mimeType = typeof MediaRecorder.isTypeSupported === "function"
+      ? preferredTypes.find((type) => MediaRecorder.isTypeSupported(type))
+      : undefined;
+    voiceChunks = [];
+    const recorder = mimeType
+      ? new MediaRecorder(voiceStream, { mimeType })
+      : new MediaRecorder(voiceStream);
+    voiceRecorder = recorder;
+
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data.size > 0) voiceChunks.push(event.data);
+    });
+    recorder.addEventListener("stop", () => {
+      voiceRecordingDuration = voiceRecordingStartedAt === null
+        ? voiceRecordingDuration
+        : Date.now() - voiceRecordingStartedAt;
+      voiceRecordingStartedAt = null;
+      clearInterval(voiceRecordingTimer);
+      voiceRecordingTimer = null;
+      releaseVoiceStream();
+
+      if (voiceChunks.length > 0) {
+        const type = recorder.mimeType || voiceChunks[0].type || "audio/webm";
+        voiceRecordingBlob = new Blob(voiceChunks, { type });
+        if (voiceRecordingUrl) URL.revokeObjectURL(voiceRecordingUrl);
+        voiceRecordingUrl = URL.createObjectURL(voiceRecordingBlob);
+        voiceRecordingStatus = "Recording ready";
+      } else {
+        voiceRecordingStatus = "No audio was captured";
+      }
+      if (voiceRecorder === recorder) voiceRecorder = null;
+      voiceRecordingBusy = false;
+      updateVoiceRecordingControls();
+    });
+    recorder.addEventListener("error", (event) => {
+      voiceRecordingStatus = `Recording failed: ${event.error ? event.error.message : "unknown error"}`;
+      clearInterval(voiceRecordingTimer);
+      voiceRecordingTimer = null;
+      releaseVoiceStream();
+      if (voiceRecorder === recorder) voiceRecorder = null;
+      voiceRecordingBusy = false;
+      updateVoiceRecordingControls();
+    });
+
+    voiceRecordingDuration = 0;
+    voiceRecordingStartedAt = Date.now();
+    voiceRecordingStatus = "Recording";
+    voiceRecorder.start(1000);
+    voiceRecordingTimer = setInterval(updateVoiceRecordingControls, 250);
+    updateVoiceRecordingControls();
+  } catch (error) {
+    releaseVoiceStream();
+    voiceRecorder = null;
+    voiceRecordingBusy = false;
+    voiceRecordingStatus = error.name === "NotAllowedError"
+      ? "Microphone permission was denied"
+      : `Could not start recording: ${error.message}`;
+    updateVoiceRecordingControls();
+  }
+}
+
+function stopVoiceRecording() {
+  if (voiceRecorder && voiceRecorder.state === "recording") {
+    voiceRecordingStatus = "Finishing recording…";
+    voiceRecorder.stop();
+    updateVoiceRecordingControls();
+  }
+}
+
+function downloadVoiceRecording() {
+  if (!voiceRecordingBlob || !voiceRecordingUrl) return;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const link = document.createElement("a");
+  link.href = voiceRecordingUrl;
+  link.download = `presentation-recording-${timestamp}.${recordingFileExtension(voiceRecordingBlob.type)}`;
+  link.click();
+}
+
+function bindVoiceRecordingControls() {
+  if (!controlWindow || controlWindow.closed) return;
+  controlWindow.document.getElementById("voice-record")?.addEventListener("click", startVoiceRecording);
+  controlWindow.document.getElementById("voice-stop")?.addEventListener("click", stopVoiceRecording);
+  controlWindow.document.getElementById("voice-download")?.addEventListener("click", downloadVoiceRecording);
+  updateVoiceRecordingControls();
+}
+
 function get_svg_cache(){
   const base64String = {{ slide_64 | tojson }};
 
@@ -547,6 +720,16 @@ function drawControlWindow() {
       // currentIndex exists in pages
       controlWindow.document.body.innerHTML = `
 <div style="height: calc(100vh - 16px); display: flex; flex-direction: column; gap: 8px; font-family: Arial, sans-serif; padding: 8px;">
+  <!-- Voice Recording -->
+  <div class="recording-controls">
+    <button id="voice-record" type="button">● Record</button>
+    <button id="voice-stop" type="button" disabled>■ Stop</button>
+    <span id="voice-duration" class="recording-duration">00:00</span>
+    <span id="voice-status" class="recording-status" role="status">Ready to record</span>
+    <audio id="voice-playback" controls hidden></audio>
+    <button id="voice-download" type="button" disabled>Download</button>
+  </div>
+
   <!-- Slide Notes -->
   <div style="flex: 1; min-height: 0; display: flex; overflow: hidden; word-wrap: break-word; overflow-wrap: break-word; padding: 4px; border: 1px solid white;">
     <div id="note" class="note" style="font-size: 30pt; white-space: pre-wrap;">${pages[currentIndex].note}</div>
@@ -564,6 +747,7 @@ function drawControlWindow() {
   </div>
 </div>
 `;
+      bindVoiceRecordingControls();
 
       async function updateSVGs() {
         const currentLeftSVG = await fetchSVG(currentIndex, "left");
@@ -598,6 +782,44 @@ function initControlWindow(pages, currentIndex) {
   const css = `
 body {
 margin: 0;
+}
+.recording-controls {
+box-sizing: border-box;
+display: flex;
+flex-wrap: wrap;
+align-items: center;
+gap: 8px;
+min-height: 42px;
+padding: 6px 8px;
+color: #f5f5f5;
+background: #242424;
+border-radius: 5px;
+}
+.recording-controls button {
+padding: 6px 10px;
+border: 1px solid #777;
+border-radius: 4px;
+cursor: pointer;
+}
+.recording-controls button:disabled {
+cursor: default;
+opacity: 0.5;
+}
+.recording-duration {
+font-variant-numeric: tabular-nums;
+font-weight: bold;
+}
+.recording-status {
+min-width: 9rem;
+color: #ddd;
+}
+.recording-status.recording {
+color: #ff6b6b;
+}
+.recording-controls audio {
+height: 32px;
+min-width: 180px;
+flex: 1;
 }
 .note {
 box-sizing: border-box;

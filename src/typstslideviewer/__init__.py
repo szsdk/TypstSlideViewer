@@ -23,7 +23,6 @@ from loguru import logger
 from PIL import Image, ImageStat
 from pydantic import BaseModel, ConfigDict
 
-
 DATA_URI_PATTERN = re.compile(r"data:[^;,]+;base64,[A-Za-z0-9+/=]+")
 
 
@@ -865,10 +864,9 @@ class Compiler:
             packed_svgs[idx] = svg
 
         original_size = sum(len(svg.encode("utf-8")) for svg in svgs.values())
-        packed_size = (
-            sum(len(svg.encode("utf-8")) for svg in packed_svgs.values())
-            + sum(len(asset.encode("utf-8")) for asset in assets.values())
-        )
+        packed_size = sum(
+            len(svg.encode("utf-8")) for svg in packed_svgs.values()
+        ) + sum(len(asset.encode("utf-8")) for asset in assets.values())
         logger.info(
             "Deduplicated repeated data URIs: "
             f"{len(assets)} assets, JSON payload text {format_size(original_size)} "
