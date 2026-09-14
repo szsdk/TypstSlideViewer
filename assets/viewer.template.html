@@ -451,6 +451,7 @@ const svgPackage = get_svg_cache();
 const cache = svgPackage.slides || svgPackage;
 const svgAssets = svgPackage.assets || {};
 const thumbnailCache = svgPackage.thumbnails || {};
+const presenterThumbnailCache = svgPackage.presenterThumbnails || {};
 
 function inflateSVG(svgContent) {
   if (!svgContent) {return svgContent;}
@@ -754,18 +755,32 @@ function drawControlWindow() {
 `;
       bindVoiceRecordingControls();
 
+      function updatePreview(elementId, index) {
+        const preview = controlWindow.document.getElementById(elementId);
+        const thumbnail = presenterThumbnailCache[index] || thumbnailCache[pages[index]?.label];
+        if (thumbnail) {
+          const image = controlWindow.document.createElement("img");
+          image.src = thumbnail;
+          image.alt = `Slide ${pages[index]?.label ?? index + 1}`;
+          preview.replaceChildren(image);
+          return Promise.resolve();
+        }
+        return fetchSVG(index, "left").then((svg) => {
+          preview.innerHTML = svg;
+        });
+      }
+
       async function updateSVGs() {
-        const currentLeftSVG = await fetchSVG(currentIndex, "left");
-        controlWindow.document.getElementById("current-svg").innerHTML = currentLeftSVG;
+        const displayedIndex = currentIndex;
+        await Promise.all([
+          updatePreview("current-svg", displayedIndex),
+          updatePreview("next-svg", (displayedIndex + 1) % totalFiles)
+        ]);
 
         if (note != "") {
-          const currentRightSVG = await fetchSVG(currentIndex, "right");
+          const currentRightSVG = await fetchSVG(displayedIndex, "right");
           controlWindow.document.getElementById("note").innerHTML = currentRightSVG;
         }
-
-        // Load the next slide SVG
-        const nextLeftSVG = await fetchSVG((currentIndex + 1) % totalFiles, "left");
-        controlWindow.document.getElementById("next-svg").innerHTML = nextLeftSVG;
       }
       updateSVGs();
 
@@ -780,8 +795,18 @@ function drawControlWindow() {
 
 
 function initControlWindow(pages, currentIndex) {
-  // Create the new window
-  controlWindow = window.open("", "Control Window", "");
+  // Request a separate popup window rather than leaving placement up to the
+  // browser (which commonly chooses a new tab when no window features exist).
+  // The stable name lets repeated shortcuts focus the same presenter window.
+  controlWindow = window.open(
+    "",
+    "typst-slide-presenter",
+    "popup=yes,width=1200,height=800,resizable=yes,scrollbars=yes"
+  );
+  if (!controlWindow) {
+    alert("The presenter window was blocked. Please allow popups for this slide file.");
+    return false;
+  }
 
   // Define the CSS for the note
   const css = `
@@ -858,7 +883,9 @@ flex: 0 1 auto;
 overflow: hidden;
 }
 #current-svg svg,
-#next-svg svg {
+#next-svg svg,
+#current-svg img,
+#next-svg img {
 display: block;
 max-width: 100%;
 max-height: 100%;
@@ -876,6 +903,8 @@ height: auto;
   controlWindow.document.head.appendChild(style);
   controlWindow.document.addEventListener("keydown", viewerKeydown);
   drawControlWindow();
+  controlWindow.focus();
+  return true;
 }
 
 
@@ -1174,8 +1203,9 @@ async function viewerKeydown(event)  {
   } else if (event.key === "w") {
     // Open new window with current page number
     if (!controlWindow || controlWindow.closed) {
-      initControlWindow();
-      controlWindow.document.close();
+      if (initControlWindow()) controlWindow.document.close();
+    } else {
+      controlWindow.focus();
     }
   }
 }
@@ -1228,8 +1258,9 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("controlIcon").addEventListener("click", () => {
     // Open control window
     if (!controlWindow || controlWindow.closed) {
-      initControlWindow();
-      controlWindow.document.close();
+      if (initControlWindow()) controlWindow.document.close();
+    } else {
+      controlWindow.focus();
     }
   });
 

@@ -32,12 +32,14 @@ test("generator emits a viewer from existing SVG files", async () => {
   assert.match(viewer, /requestIdleCallback\(resolve, \{ timeout: 200 \}\)/);
   assert.match(viewer, /setTimeout\(preload, 0\)/);
   assert.match(viewer, /const thumbnailCache = svgPackage\.thumbnails \|\| \{\}/);
+  assert.match(viewer, /const presenterThumbnailCache = svgPackage\.presenterThumbnails \|\| \{\}/);
   assert.match(viewer, /ensureThumbnails\(\)\.then\(highlightCurrentThumbnail\)/);
   assert.doesNotMatch(viewer, /\n\s*loadThumbnails\(\);\n/);
   const encoded = viewer.match(/const base64String = "([^"]+)"/)[1];
   const payload = JSON.parse(zstdDecompressSync(Buffer.from(encoded, "base64")).toString("utf8"));
   assert.match(payload.slides[0], /Hello/);
   assert.deepEqual(payload.thumbnails, {});
+  assert.deepEqual(payload.presenterThumbnails, {});
 });
 
 test("optimizer makes nested SVG video embeds playable", async () => {
@@ -49,4 +51,15 @@ test("optimizer makes nested SVG video embeds playable", async () => {
   assert.match(optimized, /<foreignObject/);
   assert.match(optimized, /data:video\/mp4;base64,dmlkZW8gYnl0ZXM=/);
   assert.doesNotMatch(optimized, /data:image\/svg\+xml/);
+});
+
+test("optimizer converts embedded bitmap images to WebP", async () => {
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAADUExURf8AABniCTcAAAAHdElNRQfqCQ0QCyKuwxO3AAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTA5LTEzVDE2OjExOjM0KzAwOjAwZyZ3uwAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0wOS0xM1QxNjoxMTozNCswMDowMBZ7zwcAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMDktMTNUMTY6MTE6MzQrMDA6MDBBbu7YAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==";
+  const svg = `<svg><image href="data:image/png;base64,${png}" /></svg>`;
+  const optimized = await optimizeSvg(svg, process.cwd(), { imageFormat: "webp", quality: 50 });
+  assert.match(optimized, /data:image\/webp;base64,/);
+  assert.doesNotMatch(optimized, /data:image\/png;base64,/);
+
+  const retained = await optimizeSvg(svg, process.cwd(), { optimizePng: false });
+  assert.match(retained, /data:image\/png;base64,/);
 });
