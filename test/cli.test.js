@@ -4,7 +4,23 @@ import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
-import { main, optimizeSvg } from "../lib/typstslideviewer.js";
+import { buildPresentationTar, main, optimizeSvg } from "../lib/typstslideviewer.js";
+
+function readTar(bytes) {
+  const entries = new Map();
+  for (let offset = 0; offset + 512 <= bytes.length;) {
+    const header = bytes.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/, "");
+    const size = Number.parseInt(header.subarray(124, 136).toString("utf8").replace(/\0.*$/, "").trim() || "0", 8);
+    entries.set(name, bytes.subarray(offset + 512, offset + 512 + size));
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return entries;
+}
+
+const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAA1BMVEUAAP+KeNJXAAAADElEQVR42mNgYGAAAAAEAAGjChM8AAAAAElFTkSuQmCC", "base64");
+const pngUri = `data:image/png;base64,${tinyPng.toString("base64")}`;
 
 test("html-embed writes the bundled helper", async () => {
   const directory = await mkdtemp(join(tmpdir(), "typstslideviewer-"));
@@ -19,7 +35,9 @@ test("generator emits a viewer from existing SVG files", async () => {
   await writeFile(source, "= A slide");
   await mkdir(svgs);
   await writeFile(join(svgs, "modified_slide_1.svg"), '<svg width="100" height="100"><text>Hello</text></svg>');
-  await writeFile(join(svgs, "meta.json"), JSON.stringify({ pages: [{ idx: 0, label: "1", forcedOverlay: false, hidden: false }] }));
+  // Plain Typst documents have no <pdfpc-file> metadata, so `typst query`
+  // returns an empty array and the generator must synthesize page metadata.
+  await writeFile(join(svgs, "meta.json"), "[]");
   await main([source, "--svg-folder", svgs, "--output-file", output, "--thumbnails", "false"]);
   const viewer = await readFile(output, "utf8");
   assert.match(viewer, /"label":1/);
@@ -31,15 +49,46 @@ test("generator emits a viewer from existing SVG files", async () => {
   assert.match(viewer, /Math\.min\(4, jobs\.length\)/);
   assert.match(viewer, /requestIdleCallback\(resolve, \{ timeout: 200 \}\)/);
   assert.match(viewer, /setTimeout\(preload, 0\)/);
-  assert.match(viewer, /const thumbnailCache = svgPackage\.thumbnails \|\| \{\}/);
-  assert.match(viewer, /const presenterThumbnailCache = svgPackage\.presenterThumbnails \|\| \{\}/);
+  assert.match(viewer, /const thumbnailCache = Object\.fromEntries/);
+  assert.match(viewer, /const presenterThumbnailCache = Object\.fromEntries/);
+  assert.match(viewer, /URL\.createObjectURL\(new Blob/);
   assert.match(viewer, /ensureThumbnails\(\)\.then\(highlightCurrentThumbnail\)/);
   assert.doesNotMatch(viewer, /\n\s*loadThumbnails\(\);\n/);
   const encoded = viewer.match(/const base64String = "([^"]+)"/)[1];
-  const payload = JSON.parse(zstdDecompressSync(Buffer.from(encoded, "base64")).toString("utf8"));
-  assert.match(payload.slides[0], /Hello/);
-  assert.deepEqual(payload.thumbnails, {});
-  assert.deepEqual(payload.presenterThumbnails, {});
+  const entries = readTar(zstdDecompressSync(Buffer.from(encoded, "base64")));
+  const manifest = JSON.parse(entries.get("manifest.json").toString("utf8"));
+  assert.equal(manifest.format, "typst-slide-viewer");
+  assert.equal(manifest.version, 2);
+  assert.match(entries.get("slides/0.svg").toString("utf8"), /Hello/);
+  assert.deepEqual(manifest.thumbnails, {});
+  assert.deepEqual(manifest.presenterThumbnails, {});
+});
+
+test("presentation TAR deduplicates binary slide assets by decoded bytes", () => {
+  const alternateEncoding = `data:image/png;base64,${tinyPng.toString("base64").replace(/=+$/, "")}`;
+  const entries = readTar(buildPresentationTar({
+    slides: { 0: `<svg><image href="${pngUri}" /></svg>`, 1: `<svg><image href="${alternateEncoding}" /></svg>` },
+  }));
+  const manifest = JSON.parse(entries.get("manifest.json").toString("utf8"));
+  assert.equal(manifest.assets.length, 1);
+  assert.equal([...entries.keys()].filter((name) => name.startsWith("assets/")).length, 1);
+  assert.match(entries.get("slides/0.svg").toString(), /@@TSV_ASSET_0@@/);
+  assert.match(entries.get("slides/1.svg").toString(), /@@TSV_ASSET_0@@/);
+});
+
+test("presentation TAR keeps distinct assets and thumbnail bytes out of the manifest", () => {
+  const anotherUri = `data:image/png;base64,${Buffer.from("different image bytes").toString("base64")}`;
+  const entries = readTar(buildPresentationTar({
+    slides: { 0: `<svg><image href="${pngUri}"/><image href="${anotherUri}"/></svg>` },
+    thumbnails: { 1: pngUri }, presenterThumbnails: { 0: pngUri },
+  }));
+  const manifestText = entries.get("manifest.json").toString("utf8");
+  const manifest = JSON.parse(manifestText);
+  assert.equal(manifest.assets.length, 2);
+  assert.deepEqual(manifest.thumbnails, { 1: 0 });
+  assert.deepEqual(manifest.presenterThumbnails, { 0: 0 });
+  assert.doesNotMatch(manifestText, /data:image|base64,/);
+  assert.deepEqual(entries.get("assets/0.png"), tinyPng);
 });
 
 test("optimizer makes nested SVG video embeds playable", async () => {

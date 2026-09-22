@@ -80,3 +80,7 @@ available on your `PATH`.
 ```bash
 gen-slide placeholders slides.typ
 ```
+
+Keep these placeholder images up to date when embedded HTML or video content
+changes. Thumbnail generation uses them during Typst's PNG render, and changes
+to their contents automatically invalidate the WebP thumbnail cache.
