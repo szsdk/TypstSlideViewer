@@ -140,6 +140,12 @@
       border: 0;
     }
 
+    #svg-container .html-overlay video {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
     #svg-container .slide {
       position: absolute;
       width: 100%;
@@ -440,7 +446,9 @@ function parseTar(bytes) {
     const sizeText = readString(offset + 124, 12);
     const size = Number.parseInt(sizeText || "0", 8);
     if (!path || !Number.isSafeInteger(size) || size < 0 || path.includes("..") || offset + 512 + size > bytes.length) throw new Error(`Invalid TAR entry '${path || "<unnamed>"}'`);
-    entries.set(path, bytes.slice(offset + 512, offset + 512 + size));
+    // Keep views into the decompressed package instead of copying every file.
+    // Slide text is decoded from these persistent bytes only when requested.
+    entries.set(path, bytes.subarray(offset + 512, offset + 512 + size));
     offset += 512 + Math.ceil(size / 512) * 512;
   }
   return entries;
@@ -473,11 +481,10 @@ function get_svg_cache(){
     if (!Number.isInteger(asset?.id) || assets.has(asset.id) || typeof asset.path !== "string" || !asset.path.startsWith("assets/") || typeof asset.mime !== "string" || !entries.has(asset.path)) throw new Error("Presentation manifest references a missing or invalid asset");
     assets.set(asset.id, { mime: asset.mime, bytes: entries.get(asset.path) });
   }
-  const slides = {};
+  const slides = new Map();
   for (const slide of manifest.slides) {
-    if (slide == null || typeof slide.id !== "string" || Object.hasOwn(slides, slide.id) || typeof slide.path !== "string" || !slide.path.startsWith("slides/") || !entries.has(slide.path)) throw new Error("Presentation manifest references a missing or invalid slide");
-    slides[slide.id] = new TextDecoder().decode(entries.get(slide.path));
-    for (const match of slides[slide.id].matchAll(/@@TSV_ASSET_(\d+)@@/g)) if (!assets.has(Number(match[1]))) throw new Error(`Slide ${slide.id} references missing asset ${match[1]}`);
+    if (slide == null || typeof slide.id !== "string" || slides.has(slide.id) || typeof slide.path !== "string" || !slide.path.startsWith("slides/") || !entries.has(slide.path)) throw new Error("Presentation manifest references a missing or invalid slide");
+    slides.set(slide.id, entries.get(slide.path));
   }
   const validateAssetMap = (map, label) => {
     if (map == null) return {};
@@ -488,9 +495,34 @@ function get_svg_cache(){
   return { slides, assets, thumbnails: validateAssetMap(manifest.thumbnails, "thumbnails"), presenterThumbnails: validateAssetMap(manifest.presenterThumbnails, "presenterThumbnails") };
 }
 const svgPackage = get_svg_cache();
-const cache = svgPackage.slides || svgPackage;
+const rawSlides = svgPackage.slides;
 const svgAssets = svgPackage.assets || new Map();
+const decodedSlideCache = new Map();
+const decodedSlideCacheLimit = 8;
 const assetUrlCache = new Map();
+
+function decodedSVG(index) {
+  const key = String(index);
+  if (decodedSlideCache.has(key)) {
+    const cached = decodedSlideCache.get(key);
+    // Refresh insertion order so the first key is always least recently used.
+    decodedSlideCache.delete(key);
+    decodedSlideCache.set(key, cached);
+    return cached;
+  }
+  const bytes = rawSlides.get(key);
+  if (!bytes) throw new Error(`Failed to load SVG ${key}`);
+  const decoded = new TextDecoder().decode(bytes);
+  for (const match of decoded.matchAll(/@@TSV_ASSET_(\d+)@@/g)) {
+    if (!svgAssets.has(Number(match[1]))) throw new Error(`Slide ${key} references missing asset ${match[1]}`);
+  }
+  decodedSlideCache.set(key, decoded);
+  while (decodedSlideCache.size > decodedSlideCacheLimit) {
+    decodedSlideCache.delete(decodedSlideCache.keys().next().value);
+  }
+  return decoded;
+}
+
 function assetUrl(id) {
   if (!svgAssets.has(id)) throw new Error(`Slide references missing asset ${id}`);
   if (!assetUrlCache.has(id)) {
@@ -499,8 +531,20 @@ function assetUrl(id) {
   }
   return assetUrlCache.get(id);
 }
-const thumbnailCache = Object.fromEntries(Object.entries(svgPackage.thumbnails || {}).map(([key, id]) => [key, assetUrl(id)]));
-const presenterThumbnailCache = Object.fromEntries(Object.entries(svgPackage.presenterThumbnails || {}).map(([key, id]) => [key, assetUrl(id)]));
+
+function lazyAssetUrls(assetMap) {
+  const urls = Object.create(null);
+  for (const [key, id] of Object.entries(assetMap || {})) {
+    Object.defineProperty(urls, key, {
+      enumerable: true,
+      get: () => assetUrl(id),
+    });
+  }
+  return urls;
+}
+
+const thumbnailCache = lazyAssetUrls(svgPackage.thumbnails);
+const presenterThumbnailCache = lazyAssetUrls(svgPackage.presenterThumbnails);
 
 function inflateSVG(svgContent) {
   if (!svgContent) {return svgContent;}
@@ -511,9 +555,9 @@ const note = {{ note | tojson }};
 const htmlOverlayCache = new Map();
 
 async function fetchSVG(index, side=null) {
-  const svgContent = inflateSVG(cache[index]);
+  const svgContent = inflateSVG(decodedSVG(index));
   if ((note === "") || (side === null)) {return svgContent;}
-  if (cache[index]) {
+  if (rawSlides.has(String(index))) {
     const tempDiv = document.createElement('div');
     tempDiv.innerHTML = svgContent;
 
@@ -643,14 +687,18 @@ function getHtmlOverlayLayer() {
   return layer;
 }
 
-function htmlOverlayBaseKey(iframe) {
-  if (iframe.hasAttribute("srcdoc")) {
+function htmlOverlaySourceKey(source) {
+  const iframe = source.querySelector("iframe");
+  if (iframe?.hasAttribute("srcdoc")) {
     return `srcdoc:${iframe.getAttribute("srcdoc")}`;
   }
-  return `src:${iframe.getAttribute("src") || ""}`;
+  if (iframe) return `src:${iframe.getAttribute("src") || ""}`;
+  const mediaSource = source.querySelector("video[src], audio[src], video source[src], audio source[src]");
+  if (mediaSource) return `media:${mediaSource.getAttribute("src")}`;
+  return `html:${source.firstElementChild?.localName || "empty"}`;
 }
 
-function promoteHtmlOverlays(slide) {
+function promoteHtmlOverlays(slide, slideId) {
   const svg = slide.querySelector("svg");
   if (!svg) {
     htmlOverlayCache.forEach((overlay) => {
@@ -662,18 +710,12 @@ function promoteHtmlOverlays(slide) {
 
   const layer = getHtmlOverlayLayer();
   const activeOverlayKeys = new Set();
-  const sourceCounts = new Map();
+  let foreignObjectIndex = 0;
 
-  slide.querySelectorAll('iframe[data-html-overlay="true"]').forEach((iframe) => {
-    const source = iframe.closest("foreignObject");
-    if (!source) {
-      return;
-    }
-
-    const baseKey = htmlOverlayBaseKey(iframe);
-    const count = sourceCounts.get(baseKey) || 0;
-    sourceCounts.set(baseKey, count + 1);
-    const key = `${baseKey}#${count}`;
+  slide.querySelectorAll("foreignObject").forEach((source) => {
+    // This key survives re-rendering the SVG: source DOM nodes are temporary,
+    // while the slide id, foreign-object order, and embedded source are stable.
+    const key = `${slideId}:${foreignObjectIndex++}:${htmlOverlaySourceKey(source)}`;
     activeOverlayKeys.add(key);
 
     let overlay = htmlOverlayCache.get(key);
@@ -681,18 +723,24 @@ function promoteHtmlOverlays(slide) {
       overlay = document.createElement("div");
       overlay.className = "html-overlay";
 
-      const overlayIframe = iframe.cloneNode(false);
-      overlayIframe.removeAttribute("width");
-      overlayIframe.removeAttribute("height");
-      overlayIframe.style.width = "100%";
-      overlayIframe.style.height = "100%";
-      overlayIframe.style.border = "0";
-
-      overlay.appendChild(overlayIframe);
+      const iframe = source.querySelector('iframe[data-html-overlay="true"]');
+      if (iframe) {
+        const overlayIframe = iframe.cloneNode(false);
+        overlayIframe.removeAttribute("width");
+        overlayIframe.removeAttribute("height");
+        overlayIframe.style.width = "100%";
+        overlayIframe.style.height = "100%";
+        overlayIframe.style.border = "0";
+        overlay.appendChild(overlayIframe);
+      } else {
+        // Move direct XHTML (videos, forms, scroll containers, applications)
+        // into the persistent layer so its live DOM state survives navigation.
+        while (source.firstChild) overlay.appendChild(source.firstChild);
+      }
       layer.appendChild(overlay);
       htmlOverlayCache.set(key, overlay);
     }
-    iframe.remove();
+    source.replaceChildren();
 
     overlay._sourceForeignObject = source;
     overlay.style.display = "block";
@@ -721,7 +769,7 @@ async function loadSVG(index, animationType = 'no-animation') {
     newSlide.innerHTML = svgContent;
 
     container.appendChild(newSlide);
-    promoteHtmlOverlays(newSlide);
+    promoteHtmlOverlays(newSlide, index);
     renderAnnotations(index, newSlide);
 
     // Get the current active slide
@@ -1357,8 +1405,8 @@ document.addEventListener("DOMContentLoaded", () => {
     saveAnnotations();
     let parser = new DOMParser();
     let serializer = new XMLSerializer();
-    const tar = Tar(Object.keys(cache).map(key => {
-      let doc = parser.parseFromString(inflateSVG(cache[key]), "image/svg+xml");
+    const tar = Tar([...rawSlides.keys()].map(key => {
+      let doc = parser.parseFromString(inflateSVG(decodedSVG(key)), "image/svg+xml");
       let svg = doc.querySelector("svg");
       svg.innerHTML += loadAnnotations(pages[key].label);
       return {
